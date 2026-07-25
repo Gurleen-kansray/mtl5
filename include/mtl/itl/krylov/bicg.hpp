@@ -5,14 +5,21 @@
 #include <mtl/operation/dot.hpp>
 #include <mtl/operation/norms.hpp>
 #include <mtl/operation/trans.hpp>
+#include <mtl/operation/mult.hpp>
 
 namespace mtl::itl {
 
 /// BiConjugate Gradient method.
 /// Solves A*x = b for non-symmetric A. Uses trans(A) internally.
 /// M must provide solve() and adjoint_solve().
+///
+/// Accumulator (optional): accumulation type for the two dot products and
+/// the two matrix-vector products (see math/accumulator_traits.hpp, #158).
+/// Defaults to void, matching dot()/mult()\'s own default -- unspecified
+/// behavior is unchanged.
 template <typename LinearOp, typename VecX, typename VecB,
-          typename PC, typename Iter>
+          typename PC, typename Iter,
+          typename Accumulator = void>
 int bicg(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
     using value_type = typename VecX::value_type;
     using size_type  = typename VecX::size_type;
@@ -25,7 +32,8 @@ int bicg(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
     vec::dense_vector<value_type> q(n), q_tilde(n);
 
     // r = b - A*x
-    auto Ax = A * x;
+    vec::dense_vector<value_type> Ax(n);
+    mtl::mult<Accumulator>(A, x, Ax);
     for (size_type i = 0; i < n; ++i) {
         r(i) = b(i) - Ax(i);
         r_tilde(i) = r(i);  // shadow residual = r initially
@@ -35,7 +43,7 @@ int bicg(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
     M.solve(z, r);
     M.adjoint_solve(z_tilde, r_tilde);
 
-    value_type rho = mtl::dot(z_tilde, z);
+    value_type rho = mtl::dot<Accumulator, value_type>(z_tilde, z);
     value_type rho_1{};
 
     while (!iter.finished(r)) {
@@ -55,16 +63,18 @@ int bicg(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
         }
 
         // q = A * p
-        auto Ap = A * p;
+        vec::dense_vector<value_type> Ap(n);
+        mtl::mult<Accumulator>(A, p, Ap);
         for (size_type i = 0; i < n; ++i)
             q(i) = Ap(i);
 
         // q_tilde = A^T * p_tilde
-        auto Atp = trans(A) * p_tilde;
+        vec::dense_vector<value_type> Atp(n);
+        mtl::mult<Accumulator>(trans(A), p_tilde, Atp);
         for (size_type i = 0; i < n; ++i)
             q_tilde(i) = Atp(i);
 
-        value_type alpha = rho / mtl::dot(p_tilde, q);
+        value_type alpha = rho / mtl::dot<Accumulator, value_type>(p_tilde, q);
 
         // x += alpha * p
         for (size_type i = 0; i < n; ++i)
@@ -83,7 +93,7 @@ int bicg(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
         M.adjoint_solve(z_tilde, r_tilde);
 
         rho_1 = rho;
-        rho = mtl::dot(z_tilde, z);
+        rho = mtl::dot<Accumulator, value_type>(z_tilde, z);
 
         if (rho == value_type(0)) {
             iter.fail(2, "bicg breakdown: rho == 0");
