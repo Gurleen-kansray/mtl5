@@ -19,7 +19,14 @@ public:
 
     explicit transposed_view(const Matrix& m) : ref_(m) {}
 
-    const_reference operator()(size_type r, size_type c) const {
+    // NOTE: returns value_type by value, not const_reference. The underlying
+    // Matrix::operator() (e.g. compressed2D) returns value_type by value for
+    // sparse accessors (structural zeros have no storage to reference), so
+    // binding a const_reference to ref_(c, r) here produced a dangling
+    // reference to a temporary -- SIGSEGV the moment BiCG's trans(A) path
+    // exercised it through mult(). CG/BiCGSTAB/GMRES never triggered this
+    // since none of them multiply by trans(A).
+    value_type operator()(size_type r, size_type c) const {
         return ref_(c, r);
     }
 
