@@ -7,6 +7,7 @@
 #include <mtl/vec/dense_vector.hpp>
 #include <mtl/operation/dot.hpp>
 #include <mtl/operation/norms.hpp>
+#include <mtl/operation/mult.hpp>
 #include <mtl/math/identity.hpp>
 
 namespace mtl::itl {
@@ -14,8 +15,14 @@ namespace mtl::itl {
 /// MINRES method for symmetric (possibly indefinite) systems.
 /// Solves A*x = b with preconditioner M and iteration controller iter.
 /// A must be symmetric.
+///
+/// Accumulator (optional): accumulation type for the dot products and the
+/// matrix-vector products (see math/accumulator_traits.hpp, #158).
+/// Defaults to void, matching dot()/mult()'s own default -- unspecified
+/// behavior is unchanged.
 template <typename LinearOp, typename VecX, typename VecB,
-          typename PC, typename Iter>
+          typename PC, typename Iter,
+          typename Accumulator = void>
 int minres(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
     using value_type = typename VecX::value_type;
     using size_type  = typename VecX::size_type;
@@ -31,7 +38,8 @@ int minres(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
     vec::dense_vector<value_type> z(n), w(n);
 
     // Initial residual: r = b - A*x
-    auto Ax = A * x;
+    vec::dense_vector<value_type> Ax(n);
+    mtl::mult<Accumulator>(A, x, Ax);
     for (size_type i = 0; i < n; ++i)
         v(i) = b(i) - Ax(i);
 
@@ -64,12 +72,10 @@ int minres(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
 
         // Lanczos step: w = A * M^{-1} * v (right preconditioned)
         M.solve(z, v);
-        auto Az = A * z;
-        for (size_type i = 0; i < n; ++i)
-            w(i) = Az(i);
+        mtl::mult<Accumulator>(A, z, w);
 
         // alpha = v^T * w
-        value_type alpha = mtl::dot(v, w);
+        value_type alpha = mtl::dot<Accumulator, value_type>(v, w);
 
         // v_new = w - alpha*v - beta*v_old
         for (size_type i = 0; i < n; ++i)
