@@ -95,7 +95,12 @@ int bicg(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
         rho_1 = rho;
         rho = mtl::dot<Accumulator, value_type>(z_tilde, z);
 
-        if (rho == value_type(0)) {
+        // rho == 0 is ambiguous between a true Lanczos breakdown and exact
+        // convergence (r == 0 drives z == z_tilde == 0, hence rho == 0).
+        // Only treat it as breakdown if we have not actually converged --
+        // otherwise a solver that lands on the exact solution in one step
+        // (e.g. 1x1 systems) gets misreported as failed.
+        if (rho == value_type(0) && !iter.finished(r)) {
             iter.fail(2, "bicg breakdown: rho == 0");
             return iter;
         }
