@@ -63,16 +63,10 @@ int bicg(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
         }
 
         // q = A * p
-        vec::dense_vector<value_type> Ap(n);
-        mtl::mult<Accumulator>(A, p, Ap);
-        for (size_type i = 0; i < n; ++i)
-            q(i) = Ap(i);
+        mtl::mult<Accumulator>(A, p, q);
 
         // q_tilde = A^T * p_tilde
-        vec::dense_vector<value_type> Atp(n);
-        mtl::mult<Accumulator>(trans(A), p_tilde, Atp);
-        for (size_type i = 0; i < n; ++i)
-            q_tilde(i) = Atp(i);
+        mtl::mult<Accumulator>(trans(A), p_tilde, q_tilde);
 
         value_type alpha = rho / mtl::dot<Accumulator, value_type>(p_tilde, q);
 
