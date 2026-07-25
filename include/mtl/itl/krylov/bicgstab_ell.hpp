@@ -7,6 +7,7 @@
 #include <mtl/mat/dense2D.hpp>
 #include <mtl/operation/dot.hpp>
 #include <mtl/operation/norms.hpp>
+#include <mtl/operation/mult.hpp>
 #include <mtl/math/identity.hpp>
 
 namespace mtl::itl {
@@ -14,8 +15,14 @@ namespace mtl::itl {
 /// BiCGSTAB(ell) method for non-symmetric systems.
 /// ell >= 1 controls the degree of the stabilization polynomial.
 /// Higher ell may improve convergence on stiff or highly non-normal problems.
+///
+/// Accumulator (optional): accumulation type for the dot products and the
+/// matrix-vector products (see math/accumulator_traits.hpp, #158).
+/// Defaults to void, matching dot()/mult()'s own default -- unspecified
+/// behavior is unchanged. two_norm() calls are NOT routed through
+/// Accumulator, matching the convention set by cg/bicgstab/gmres/idr_s/bicg.
 template <typename LinearOp, typename VecX, typename VecB,
-          typename PC, typename Iter>
+          typename PC, typename Iter, typename Accumulator = void>
 int bicgstab_ell(const LinearOp& A, VecX& x, const VecB& b, const PC& M,
                  Iter& iter, std::size_t ell) {
     using value_type = typename VecX::value_type;
@@ -35,7 +42,8 @@ int bicgstab_ell(const LinearOp& A, VecX& x, const VecB& b, const PC& M,
 
     bool x_is_zero = (mtl::two_norm(x) == zero);
     if (!x_is_zero) {
-        auto Ax = A * x;
+        vec::dense_vector<value_type> Ax(n);
+        mtl::mult<Accumulator>(A, x, Ax);
         for (size_type i = 0; i < n; ++i)
             r_hat[0](i) = b(i) - Ax(i);
         for (size_type i = 0; i < n; ++i)
@@ -85,7 +93,7 @@ int bicgstab_ell(const LinearOp& A, VecX& x, const VecB& b, const PC& M,
 
         // BiCG part
         for (std::size_t j = 0; j < ell; ++j) {
-            value_type rho_1 = mtl::dot(r0_tilde, r_hat[j]);
+            value_type rho_1 = mtl::dot<Accumulator, value_type>(r0_tilde, r_hat[j]);
             value_type beta = alpha * rho_1 / rho_0;
             rho_0 = rho_1;
 
@@ -96,11 +104,9 @@ int bicgstab_ell(const LinearOp& A, VecX& x, const VecB& b, const PC& M,
 
             // u_hat[j+1] = A * M^{-1} * u_hat[j]
             M.solve(y, u_hat[j]);
-            auto Ay = A * y;
-            for (size_type k = 0; k < n; ++k)
-                u_hat[j + 1](k) = Ay(k);
+            mtl::mult<Accumulator>(A, y, u_hat[j + 1]);
 
-            value_type gamma_val = mtl::dot(r0_tilde, u_hat[j + 1]);
+            value_type gamma_val = mtl::dot<Accumulator, value_type>(r0_tilde, u_hat[j + 1]);
             if (gamma_val == zero) {
                 iter.fail(3, "bicgstab_ell breakdown: gamma == 0");
                 finalize();
@@ -121,9 +127,7 @@ int bicgstab_ell(const LinearOp& A, VecX& x, const VecB& b, const PC& M,
 
             // r_hat[j+1] = A * M^{-1} * r_hat[j]
             M.solve(y, r_hat[j]);
-            auto Ar = A * y;
-            for (size_type k = 0; k < n; ++k)
-                r_hat[j + 1](k) = Ar(k);
+            mtl::mult<Accumulator>(A, y, r_hat[j + 1]);
 
             for (size_type k = 0; k < n; ++k)
                 x(k) += alpha * u_hat[0](k);
@@ -133,12 +137,12 @@ int bicgstab_ell(const LinearOp& A, VecX& x, const VecB& b, const PC& M,
         for (std::size_t j = 1; j <= ell; ++j) {
             for (std::size_t i = 1; i < j; ++i) {
                 if (sigma(i) == zero) continue;
-                tau(i, j) = mtl::dot(r_hat[j], r_hat[i]) / sigma(i);
+                tau(i, j) = mtl::dot<Accumulator, value_type>(r_hat[j], r_hat[i]) / sigma(i);
                 for (size_type k = 0; k < n; ++k)
                     r_hat[j](k) -= tau(i, j) * r_hat[i](k);
             }
-            sigma(j) = mtl::dot(r_hat[j], r_hat[j]);
-            gamma_a(j) = mtl::dot(r_hat[0], r_hat[j]) / sigma(j);
+            sigma(j) = mtl::dot<Accumulator, value_type>(r_hat[j], r_hat[j]);
+            gamma_a(j) = mtl::dot<Accumulator, value_type>(r_hat[0], r_hat[j]) / sigma(j);
         }
 
         gamma(ell) = gamma_a(ell);
