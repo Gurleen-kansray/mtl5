@@ -5,13 +5,20 @@
 #include <mtl/vec/dense_vector.hpp>
 #include <mtl/operation/dot.hpp>
 #include <mtl/operation/norms.hpp>
+#include <mtl/operation/mult.hpp>
 
 namespace mtl::itl {
 
 /// TFQMR solver for non-symmetric systems A*x = b.
 /// Does not require A^T (transpose-free). Left preconditioner M.
+///
+/// Accumulator (optional): accumulation type for the dot products and the
+/// matrix-vector products (see math/accumulator_traits.hpp, #158).
+/// Defaults to void, matching dot()/mult()'s own default -- unspecified
+/// behavior is unchanged.
 template <typename LinearOp, typename VecX, typename VecB,
-          typename PC, typename Iter>
+          typename PC, typename Iter,
+          typename Accumulator = void>
 int tfqmr(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
     using value_type = typename VecX::value_type;
     using size_type  = typename VecX::size_type;
@@ -23,7 +30,8 @@ int tfqmr(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
     vec::dense_vector<value_type> d(n), v(n), u1(n), u2(n), tmp(n);
 
     // r = b - A*x
-    auto Ax = A * x;
+    vec::dense_vector<value_type> Ax(n);
+    mtl::mult<Accumulator>(A, x, Ax);
     for (size_type i = 0; i < n; ++i) {
         r(i) = b(i) - Ax(i);
         r_star(i) = r(i);
@@ -34,21 +42,19 @@ int tfqmr(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
     // y1 = M^{-1} r
     M.solve(y1, r);
 
-    auto Ay1 = A * y1;
-    for (size_type i = 0; i < n; ++i) {
-        u1(i) = Ay1(i);
+    mtl::mult<Accumulator>(A, y1, u1);
+    for (size_type i = 0; i < n; ++i)
         v(i) = u1(i);
-    }
 
     value_type tau = mtl::two_norm(r);
     value_type theta = value_type(0);
     value_type eta = value_type(0);
-    value_type rho = mtl::dot(r_star, r);
+    value_type rho = mtl::dot<Accumulator, value_type>(r_star, r);
 
     while (!iter.finished(tau)) {
         ++iter;
 
-        value_type sigma = mtl::dot(r_star, v);
+        value_type sigma = mtl::dot<Accumulator, value_type>(r_star, v);
         if (sigma == value_type(0)) {
             iter.fail(2, "tfqmr breakdown: sigma == 0");
             return iter;
@@ -78,9 +84,7 @@ int tfqmr(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
         // y2 = M^{-1} w
         M.solve(y2, w);
 
-        auto Ay2 = A * y2;
-        for (size_type i = 0; i < n; ++i)
-            u2(i) = Ay2(i);
+        mtl::mult<Accumulator>(A, y2, u2);
 
         // Even half-step
         for (size_type i = 0; i < n; ++i)
@@ -100,7 +104,7 @@ int tfqmr(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
         for (size_type i = 0; i < n; ++i)
             x(i) += eta * d(i);
 
-        value_type rho_new = mtl::dot(r_star, w);
+        value_type rho_new = mtl::dot<Accumulator, value_type>(r_star, w);
         if (rho == value_type(0)) {
             iter.fail(2, "tfqmr breakdown: rho == 0");
             return iter;
@@ -111,9 +115,7 @@ int tfqmr(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
         // y1 = M^{-1} w
         M.solve(y1, w);
 
-        auto Ay1n = A * y1;
-        for (size_type i = 0; i < n; ++i)
-            u1(i) = Ay1n(i);
+        mtl::mult<Accumulator>(A, y1, u1);
 
         // v = u1 + beta * (u2 + beta * v)
         for (size_type i = 0; i < n; ++i)
