@@ -4,13 +4,20 @@
 #include <mtl/vec/dense_vector.hpp>
 #include <mtl/operation/dot.hpp>
 #include <mtl/operation/norms.hpp>
+#include <mtl/operation/mult.hpp>
 
 namespace mtl::itl {
 
 /// Conjugate Gradient Squared method for non-symmetric systems.
 /// Solves A*x = b with preconditioner M and iteration controller iter.
+///
+/// Accumulator (optional): accumulation type for the dot products and the
+/// matrix-vector products (see math/accumulator_traits.hpp, #158).
+/// Defaults to void, matching dot()/mult()'s own default -- unspecified
+/// behavior is unchanged.
 template <typename LinearOp, typename VecX, typename VecB,
-          typename PC, typename Iter>
+          typename PC, typename Iter,
+          typename Accumulator = void>
 int cgs(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
     using value_type = typename VecX::value_type;
     using size_type  = typename VecX::size_type;
@@ -21,7 +28,8 @@ int cgs(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
     vec::dense_vector<value_type> u(n), uhat(n), q(n), vhat(n), qhat(n);
 
     // r = b - A*x
-    auto Ax = A * x;
+    vec::dense_vector<value_type> Ax(n);
+    mtl::mult<Accumulator>(A, x, Ax);
     for (size_type i = 0; i < n; ++i) {
         r(i) = b(i) - Ax(i);
         rtilde(i) = r(i);
@@ -34,7 +42,7 @@ int cgs(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
 
     while (!iter.finished(r)) {
         ++iter;
-        rho_1 = mtl::dot(rtilde, r);
+        rho_1 = mtl::dot<Accumulator, value_type>(rtilde, r);
 
         if (rho_1 == value_type(0)) {
             iter.fail(2, "cgs breakdown: rho == 0");
@@ -60,12 +68,15 @@ int cgs(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
         M.solve(phat, p);
 
         // vhat = A * phat
-        auto Aphat = A * phat;
-        for (size_type i = 0; i < n; ++i)
-            vhat(i) = Aphat(i);
+        mtl::mult<Accumulator>(A, phat, vhat);
 
         // alpha = rho_1 / dot(rtilde, vhat)
-        alpha = rho_1 / mtl::dot(rtilde, vhat);
+        value_type rtv = mtl::dot<Accumulator, value_type>(rtilde, vhat);
+        if (rtv == value_type(0)) {
+            iter.fail(3, "cgs breakdown: dot(rtilde, vhat) == 0");
+            return iter;
+        }
+        alpha = rho_1 / rtv;
 
         // q = u - alpha * vhat
         for (size_type i = 0; i < n; ++i)
@@ -83,9 +94,7 @@ int cgs(const LinearOp& A, VecX& x, const VecB& b, const PC& M, Iter& iter) {
             x(i) += alpha * uhat(i);
 
         // qhat = A * uhat
-        auto Auhat = A * uhat;
-        for (size_type i = 0; i < n; ++i)
-            qhat(i) = Auhat(i);
+        mtl::mult<Accumulator>(A, uhat, qhat);
 
         // r -= alpha * qhat
         for (size_type i = 0; i < n; ++i)
