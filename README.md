@@ -8,7 +8,7 @@ MTL5 is a modernized successor to [MTL4](https://github.com/stillwater-sc/mtl4),
 
 - **Header-only** — no build step; drop `include/` on your path and `#include <mtl/mtl.hpp>`
 - **Zero Boost dependency** — pure C++20 (concepts, `constexpr`, `std::span`, ranges)
-- **Mixed precision throughout** — a shared `accumulator_traits` policy expresses the three precisions of a kernel (element, accumulate, result); e.g. `mult<float>(A_bf16, B_bf16, C_bf16)` accumulates in fp32 and stores bf16 once
+- **Mixed precision throughout** — a shared `accumulator_traits` policy expresses the three precisions of a kernel (element, accumulate, result); e.g. `mult<float>(A_bf16, B_bf16, C_bf16)` accumulates in fp32 and stores bf16 once. The policy threads through the dense/sparse kernels, every Krylov solver, and the smoothers, plus dense LU iterative refinement for low-precision-factor + high-precision-residual solves
 - **Custom arithmetic types** — designed for posits, LNS, and other Universal number types; the accumulator is a pluggable policy, so an exact quire super-accumulator drops in from the Universal pairing (MTL5 itself stays library-free)
 - **Dense & sparse** — CSR/CSC, COO, ELLPACK, block-diagonal, plus dense row/column-major
 - **Complete BLAS surface** — L1/L2/L3, generic over any type, auto-dispatching to external BLAS/LAPACK for dense float/double
@@ -75,6 +75,7 @@ int main() {
 - **Factorizations** — LU, QR, LQ, Cholesky, LDLᵀ (and Bunch–Kaufman `ldlt_bk`), SVD, Hessenberg reduction, Householder & Givens
 - **Eigenvalues** — symmetric solver and general (Francis implicit double-shift QR); `eigen` returns eigenvalues **and** eigenvectors
 - **Solvers & inverses** — triangular solves, `inv`, `sparse_solve`
+- **Mixed-precision iterative refinement** — `lu_iterative_refine<Working>(A, b, x)` factors once in a low `Working` precision and corrects with a higher-precision residual (best-iterate return, patience, optional scale-and-round), plus `normwise_backward_error` as the quality/termination metric
 - **Structure & utility** — `trace`, `diagonal`, `kron` (Kronecker product), `projection`, `reorder`, `trans`, `conj`, `real`/`imag`, `product`, `sum`, `min`/`max`, `fill`, `random`
 - **Transcendentals** — the full element-wise set: trig, inverse trig, hyperbolic, `exp`/`log`/`pow`/`sqrt`/`cbrt`, `erf`/`erfc`, rounding
 - **Property predicates** — `is_symmetric`/`is_hermitian`, `is_spd`/`is_positive_definite`, `is_singular`/`is_invertible`, `determinant`, `condition_number`/`rcond`, `numerical_rank`/`nullity`, `spectral_radius`, `inertia`, `is_orthogonal`/`is_unitary`/`is_normal`, and many structural/vector checks
@@ -83,7 +84,7 @@ int main() {
 
 - **`math::accumulator_traits<Acc, Value>`** — a cross-cutting policy expressing element (storage), accumulator (compute), and result (serialize) precisions; the accumulate→output conversion is fused into the final store. It abstracts a sum-of-products reduction so a kernel writes one loop regardless of how terms combine, and covers three configurations: plain `acc += product` (the default primary template), fused multiply-add via `math::fma_accumulator<T>` (one rounding per term, no intermediate product round), and a caller-supplied super-accumulator (e.g. an exact quire) for single-rounding dot products
 - **`convert`** — standalone element-wise re-quantization (distinct from the fused epilogue)
-- Applied across `dot`, `gemm`/`mult`, `gemv`, and the sum-of-squares norms; default (`Accumulator = void`) is byte-identical to the plain path
+- Threaded through the dense kernels (`dot`, `gemm`/`mult`, `gemv`, sum-of-squares norms), the sparse factorizations, **every Krylov solver**, and the **stationary smoothers** — each takes an optional `Accumulator` template parameter; default (`Accumulator = void`) is byte-identical to the plain path
 
 ### SIMD (`mtl::simd`, optional)
 
@@ -95,9 +96,9 @@ A persistent `detail::thread_pool` built on the C++ standard concurrency runtime
 
 ### Iterative solvers (`mtl::itl`)
 
-- **Krylov** — `cg`, `bicg`, `bicgstab`, `bicgstab_ell`, `cgs`, `gmres`, `idr_s`, `minres`, `qmr`, `tfqmr`
+- **Krylov** — `cg`, `bicg`, `bicgstab`, `bicgstab_ell`, `cgs`, `gmres`, `idr_s`, `minres`, `qmr`, `tfqmr` — all accumulator-aware (route their `dot`/`mult` through `accumulator_traits`)
 - **Preconditioners** (`itl::pc`) — `identity`, `diagonal`, `block_diagonal`, `ic_0`, `ildl`, `ilu_0`, `ilut`, `ssor`
-- **Smoothers** (`itl::smoother`) — `jacobi`, `gauss_seidel`, `sor`
+- **Smoothers** (`itl::smoother`) — `jacobi`; `gauss_seidel` with `backward_gauss_seidel` and `symmetric_gauss_seidel` (SGS); `sor` with `backward_sor` and `symmetric_sor` (SSOR) — forward/backward/symmetric sweep directions, all accumulator-aware
 - **Multigrid** (`itl::mg`) — geometric multigrid with prolongation/restriction
 - **Iterative eigensolvers** (`itl::eigen`) — `power_iteration`, `lanczos`, `arnoldi`, matrix-free through the `LinearOperator` concept
 
@@ -122,7 +123,9 @@ Auto-dispatching bindings that engage when the type qualifies (dense column-majo
 
 ### Test matrix generators (`mtl::generators`)
 
-A catalog of classic and random test matrices: `hilbert`, `frank`, `wilkinson`, `clement`, `companion`, `forsythe`, `kahan`, `lehmer`, `lotkin`, `minij`, `moler`, `pascal`, `rosser`, `vandermonde`, `laplacian`, `poisson`, `ones`, and randomized `randorth`, `randspd`, `randsym`, `randsvd`.
+- **Parametric matrices** — classic and random test matrices at arbitrary size with controllable conditioning: `hilbert`, `frank`, `wilkinson`, `clement`, `companion`, `forsythe`, `kahan`, `lehmer`, `lotkin`, `minij`, `moler`, `pascal`, `rosser`, `vandermonde`, `laplacian`, `poisson`, `ones`, `magic`, and randomized `randorth`, `randspd`, `randsym`, `randsvd`
+- **Range / spacing vectors** — NumPy-style `arange`, `linspace`, `logspace`, `geomspace` returning `dense_vector<T>`
+- **Named test-matrix catalog** (`mtl::testsuite`) — well-known reference matrices (SuiteSparse / textbook problems) with published condition numbers, so studies run on the same named problems: `testsuite::by_name("bcsstk01")`, `testsuite::kappa(name)`, `testsuite::names()`
 
 ## Build Options
 
