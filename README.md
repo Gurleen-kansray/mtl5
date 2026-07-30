@@ -15,7 +15,7 @@ MTL5 is a modernized successor to [MTL4](https://github.com/stillwater-sc/mtl4),
 - **Sparse direct solvers** — native Cholesky/LDLᵀ/LU/QR, supernodal LU/LDLᵀ, KLU, fill-reducing orderings, plus wrappers for SuiteSparse/SuperLU
 - **Iterative solvers** — a full Krylov suite, preconditioners, smoothers, and multigrid
 - **Eigen & SVD** — dense (symmetric + general with eigenvectors), matrix-free iterative (Lanczos/Arnoldi/power), and sparse shift-invert
-- **On-node threading** — a dependency-free thread pool; kernels are bit-identical across thread counts
+- **On-node threading** — a dependency-free thread pool (no OpenMP/TBB); every substantial dense and sparse kernel is threaded — BLAS L1/2/3 (incl. multi-loop GEMM), dense factorizations (LU/Cholesky/QR), sparse direct solvers (level-scheduled), and element-wise sweeps — and **bit-identical across thread counts**, serial by default
 - **Optional SIMD** — Google Highway-backed batch kernels with narrow→wide widening on load
 
 ## Requirements
@@ -92,7 +92,14 @@ Google Highway-backed `batch`, `algorithm`, and `blocking` layers with **widenin
 
 ### On-node threading
 
-A persistent `detail::thread_pool` built on the C++ standard concurrency runtime (no OpenMP/TBB) with `parallel_for` and `parallel_reduce`. Threaded kernels — blocked GEMM, GEMV, `axpy`/`scal`, `dot`/`nrm2`, and sparse SpMV — are **bit-identical across thread counts** (reductions are deterministic per thread count). Threading is **off by default**; `MTL5_NUM_THREADS` sizes the pool. Iterative and eigen solvers inherit the SpMV/L1 threading with no solver-code changes.
+A persistent `detail::thread_pool` built on the C++ standard concurrency runtime (no OpenMP/TBB) with `parallel_for` and `parallel_reduce`. Every substantial dense and sparse kernel is threaded and **bit-identical across thread counts** — the parallel result matches the serial one exactly (`==`), not just to a tolerance:
+
+- **Level 1/2/3 BLAS** — `axpy`/`scal`, `dot`/`nrm2`, GEMV, and a BLIS-style blocked GEMM with **multi-loop (2D `jc × ic`) parallelism** that scales tall, wide, and square shapes
+- **Dense factorizations** — LU, Cholesky, and Householder QR (parallel trailing/column updates and reflector application)
+- **Sparse direct solvers** — the triangular solves of sparse Cholesky, LDLᵀ, LU, and their supernodal variants, parallelized by **level scheduling** (value-agnostic schedules that survive same-pattern in-place refactorization)
+- **Sparse SpMV** and the **element-wise expression sweeps** behind `y = a + b`, `C += A + B`, etc.
+
+Bit-identity is preserved by construction: reductions are recast to one-write-per-output form, the sparse solves replay the serial accumulation order, and each GEMM C-block gets the same FMAs in the same order regardless of grid shape. Threading is **off by default** (serial, zero overhead); `MTL5_NUM_THREADS` sizes the pool. Iterative and eigen solvers inherit the SpMV/L1 threading with no solver-code changes. See `docs/design/parallelization-patterns-and-pitfalls.md` for the design rationale.
 
 ### Iterative solvers (`mtl::itl`)
 
