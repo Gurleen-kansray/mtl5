@@ -37,6 +37,8 @@
 #include <mtl/operation/qr.hpp>
 #include <mtl/operation/cholesky.hpp>
 #include <mtl/operation/eigenvalue_symmetric.hpp>
+#include <mtl/vec/operators.hpp>   // element-wise vector expressions (a + b)
+#include <mtl/mat/operators.hpp>   // element-wise matrix expressions (A + B)
 
 namespace mtl::bench {
 
@@ -215,6 +217,51 @@ inline void bench_gemm_rect(reporter& rep, const std::string& label,
                          op, label, s.n, flops, warmup, iterations);
         rep.add(t);
     }
+}
+
+// Element-wise expression sweeps (#297 batch 10 / #312): y = a + b (vector) and
+// C = A + B (matrix). Pure per-index writes routed through detail::parallel_ewise
+// -- memory-bandwidth bound, so scaling ceilings at the bandwidth, not the core
+// count. The vector sweep is over the element index; the matrix sweep is
+// row-parallel, so a WIDE/short matrix (few rows) cannot split (documents the
+// #313 gap) while TALL/square shapes scale. The "gflops" column carries element
+// throughput (elements/ns), whose ratio across thread counts is the speedup.
+inline void bench_ewise(reporter& rep, const std::string& label,
+                        std::size_t warmup = 3, std::size_t iterations = 20) {
+    // Vectors: y = a + b. A volatile sink reads the last element inside the timed
+    // region so an optimizer cannot elide the sweep (the output is otherwise
+    // never consumed) or hoist the loop-invariant assignment out of the loop.
+    volatile double sink = 0.0;
+    for (std::size_t n : {std::size_t{100000}, std::size_t{1000000}, std::size_t{10000000}}) {
+        auto a = make_random_vector<double>(n);
+        auto b = make_random_vector<double>(n, 456);
+        vec::dense_vector<double> c(n);
+        const double work = static_cast<double>(n);           // 1 add / element
+        auto t = measure([&]{ c = a + b; sink += c(n - 1); },
+                         "ewise-vec", label, n, work, warmup, iterations);
+        rep.add(t);
+    }
+    // Matrices: C = A + B (row-parallel sweep). Distinct nrows so analyze_scaling
+    // keys each shape separately; kind + RxC in the operation field.
+    struct shape { std::size_t r, c; const char* kind; };
+    static const shape shapes[] = {
+        {1024, 1024,   "square"},
+        {4096, 4096,   "square"},
+        {2000000,  8,  "tall"},   // many rows -> splits across the pool
+        {1, 16000000,  "wide"},   // ONE row -> row-parallel sweep runs serial (#313)
+    };
+    for (const auto& s : shapes) {
+        auto A = make_random_matrix<double>(s.r, s.c);
+        auto B = make_random_matrix<double>(s.r, s.c, 99);
+        mat::dense2D<double> C(s.r, s.c);
+        const double work = static_cast<double>(s.r) * static_cast<double>(s.c);
+        const std::string op = std::string("ewise-mat-") + s.kind + " "
+                             + std::to_string(s.r) + "x" + std::to_string(s.c);
+        auto t = measure([&]{ C = A + B; sink += C(s.r - 1, s.c - 1); },
+                         op, label, s.r, work, warmup, iterations);
+        rep.add(t);
+    }
+    (void)sink;
 }
 
 inline void bench_trmm(reporter& rep, const std::string& label,
