@@ -166,7 +166,7 @@ Score score_matrix(const std::string& name,
                 fac.solve(x, b);
             });
             for (const auto& blk : fac.block_numeric)
-                s.native_fill += blk.L.nnz() + blk.U.nnz();
+                s.native_fill += blk.factorL().nnz() + blk.factorU().nnz();
             s.native_resid = rel_residual(A, x, b);
             s.native_ok = true;
         } catch (const std::exception& e) {
