@@ -47,10 +47,18 @@ the numbers are what a real app compiled that way would get.
 
 ```
 benchmarks/
-  bench_all.cpp          CLI driver (sizes/sweeps/suites + --label)
+  bench_all.cpp          dense BLAS/LAPACK driver (sizes/sweeps/suites + --label)
+  bench_klu.cpp          sparse scoreboard: native KLU vs SuiteSparse KLU (#138)
+  bench_superlu.cpp      sparse scoreboard: native LU vs SuperLU (#186)
+  bench_sparse.cpp       level-scheduled sparse triangular-solve scaling (#297)
   run_sweeps.sh          builds native/native-fast/openblas/blis/mkl variants and runs the sweeps
+  run_scaling.sh         multi-core GEMM scaling across backends and thread counts (#108)
+  run_scaling_297.sh     native 1->N scaling of every threaded kernel family (#297)
+  fetch_klu_matrices.sh      downloads the SuiteSparse circuit matrices for bench_klu
+  fetch_superlu_matrices.sh  downloads the SuiteSparse unsymmetric matrices for bench_superlu
   plot_results.py        GFLOP/s-vs-N plots from the CSVs
   analyze_gate.py        % of a reference backend (--reference, default openblas) / % of FMA peak + the pass/fail perf gate
+  analyze_scaling.py     speedup + parallel efficiency from the run_scaling*.sh CSVs
   harness/
     timer.hpp            high-resolution timing + statistics
     reporter.hpp         console table + CSV output
@@ -58,6 +66,21 @@ benchmarks/
     runner.hpp           per-suite runners (call the public mtl:: API)
   data/                  committed example CSVs + rendered plots (see data/README.md)
 ```
+
+`bench_all` is the dense driver documented in the next few sections; the three
+sparse binaries are covered under [Sparse direct-solver
+scoreboards](#sparse-direct-solver-scoreboards).
+
+All four are built only when `MTL5_BUILD_BENCHMARKS=ON`, which the `release`
+preset now sets:
+
+```bash
+cmake --preset release && cmake --build build-release -j$(nproc)
+```
+
+That preset links no external library, so it builds every benchmark in its
+native-only configuration — enough to run them, but the vendor comparison
+columns stay empty. See the per-backend builds below.
 
 ## Build & run (reproducible, all variants)
 
@@ -106,18 +129,34 @@ to `native` or `blas`; `run_sweeps.sh` passes `native`/`openblas`/`mkl`).
 
 ### Suites
 
-`all`, `blas` (= l1 + l2 + l3), `lapack`, the level groups `l1` (dot + nrm2 +
-axpy + scal), `l2` (gemv), `l3` (gemm), and the individual ops `dot`, `nrm2`,
-`axpy`, `scal`, `gemv`, `gemm`,
-`lu`, `qr`, `cholesky`, `eig`.
+| Suite | Runs |
+|-------|------|
+| `all` | every suite below except `gemm-rect` / `ewise` |
+| `blas` | `l1` + `l2` + `l3` |
+| `l1` | `dot`, `nrm2`, `axpy`, `scal` |
+| `l2` | `gemv`, `ger`, `symv`, `trmv`, `trsv` |
+| `l3` | `gemm`, `trmm`, `trsm`, `symm`, `syrk`, `syr2k` |
+| `lapack` | `lu`, `qr`, `cholesky`, `eig` |
+| `gemm-rect` | rectangular GEMM shapes: the BLIS multi-loop 2D grid (#297) |
+| `ewise` | element-wise vector/matrix expression sweeps (#297) |
+
+Any individual op above is also a suite name of its own (`--suite trsm`). The
+authoritative list is always `bench_all --help`.
+
+`gemm-rect` and `ewise` carry their own built-in shape sets and ignore
+`--sizes` / `--sweep`.
 
 ### BLAS routine coverage
 
-Benchmarked (the core BLAS routines MTL5 implements): **L1** `dot`, `nrm2`,
-`axpy`, `scal`; **L2** `gemv`; **L3** `gemm`. Standard BLAS routines MTL5 does
-**not** implement yet — and therefore cannot benchmark — are, for reference:
-L1 `asum`, `iamax`, `copy`, `swap`, `rot`; L2 `ger`, `symv`, `trmv`, `trsv`;
-L3 `symm`, `syrk`, `syr2k`, `trmm`, `trsm` (tracked in #227).
+Benchmarked, and therefore implemented in MTL5: **L1** `dot`, `nrm2`, `axpy`,
+`scal`; **L2** `gemv`, `ger`, `symv`, `trmv`, `trsv`; **L3** `gemm`, `trmm`,
+`trsm`, `symm`, `syrk`, `syr2k`. That is the full L2/L3 core — #227 closed the
+gap that earlier revisions of this file described as outstanding.
+
+Standard BLAS routines with no public `mtl::` operation, and hence no benchmark:
+L1 `asum`, `iamax`, `rot`, `copy`, `swap`. (`copy` has a raw binding in
+`mtl/interface/blas.hpp` for internal use, but no public op; `copy`/`swap` are
+normally expressed through assignment and `std::swap`.)
 
 ### Sweeping size N (padding / odd-size overhead)
 
@@ -215,6 +254,119 @@ OpenBLAS gap widens to ~62% at 8 threads. The simple per-`(jc,pc)` thread-team
 spawn and `ic`-only partition leave room for a persistent thread pool and
 multi-loop (BLIS-style) parallelization — a future optimization, tracked
 separately from this measurement.
+
+### Which variable sets the thread count
+
+Concurrency is a **runtime** axis of an already-built binary — you do not
+rebuild to change it. Which variable applies depends on what the binary was
+built against:
+
+| Build | Variable |
+|-------|----------|
+| `native-fast` (`-DMTL5_NATIVE_FAST_GEMM=ON -DMTL5_WITH_HIGHWAY=ON`) | `MTL5_NUM_THREADS` |
+| `openblas` (`-DMTL5_WITH_BLAS=ON`) | `OPENBLAS_NUM_THREADS` |
+| `blis` (`-DBLA_VENDOR=FLAME`) | `BLIS_NUM_THREADS` |
+| `mkl` (`-DBLA_VENDOR=Intel10_64lp`) | `MKL_NUM_THREADS` |
+
+`MTL5_NUM_THREADS` is read **once**, on first use of the pool, and clamped to
+the hardware concurrency; unset or invalid means 1 (fully serial). See
+`mtl/detail/thread_pool.hpp` and `docs/algorithms/on-node-threading.md`.
+
+> **A plain build will not show GEMM scaling.** The threaded GEMM/GEMV paths in
+> `mtl/operation/mult.hpp` sit inside `#ifdef MTL5_NATIVE_FAST_GEMM`, so in a
+> build without it (the `release` preset, for instance) `MTL5_NUM_THREADS` leaves
+> `--suite gemm` / `l3` timings unchanged. The L1/L2 reductions (`dot`, `nrm2`,
+> `axpy`, `scal`) use the pool unconditionally and do scale. Build the
+> `native-fast` variant for meaningful dense scaling numbers.
+
+Labelling matters when sweeping by hand: `analyze_scaling.py` recovers the
+thread count by parsing the `backend` CSV column, so pass
+`--label <backend>-t<T>` exactly as the scripts do.
+
+```bash
+for T in 1 2 4 8; do
+  MTL5_NUM_THREADS=$T OMP_NUM_THREADS=$T \
+    taskset -c $(seq -s, 0 2 $((2*T-2))) \
+    ./build-native-fast/benchmarks/bench_all --suite gemm --sizes 1024,2048 \
+      --label native-fast-t$T --csv t$T.csv
+done
+```
+
+## Threaded-kernel scaling across families (#297)
+
+`run_scaling.sh` covers GEMM across backends. `run_scaling_297.sh` is the
+native-only counterpart that sweeps **every** threaded kernel family 1→N,
+writing one CSV per family with the `backend` column labelled `native-t<T>`:
+
+| Suite | Family | Issues |
+|-------|--------|--------|
+| `gemm_rect` | rectangular GEMM, BLIS multi-loop 2D grid | #311 |
+| `lu` / `qr` / `chol` | dense factorizations | #298, #300 |
+| `ewise` | element-wise vector/matrix expression sweeps | #312 |
+| `sparse` | level-scheduled sparse triangular solves | #301–#309 |
+
+```bash
+BENCH_PCPUS=0,2,4,6,8,10,12,14 THREADS="1 2 4 8" benchmarks/run_scaling_297.sh
+benchmarks/analyze_scaling.py benchmarks/data/scaling_*.csv --plot out.png
+benchmarks/analyze_scaling.py benchmarks/data/scaling_ewise.csv --op ewise-vec
+```
+
+Environment: `BENCH_PCPUS`, `THREADS`, `LAPACK_SIZES` (default
+`1024,2048,4096`), `SPARSE_SIZES` (2-D grid sides, default `200,320`), `BUILD`
+(default `build-scaling-297`), `JOBS`. `analyze_scaling.py` keys its series on
+`(operation, size)`, so families that share a size no longer collide.
+
+Results are written up in `docs/design/issue-297-threading-results.md`; the plan
+is `docs/design/issue-297-threading-benchmark-plan.md`.
+
+## Sparse direct-solver scoreboards
+
+Three binaries measure the sparse side. Each runs a built-in synthetic suite
+with no arguments, so they are useful immediately after a plain build:
+
+```bash
+./build-release/benchmarks/bench_klu          # 2D Poisson, 32^2 .. 256^2
+./build-release/benchmarks/bench_superlu      # 2D convection-diffusion (unsymmetric)
+./build-release/benchmarks/bench_sparse       # synthetic sparse triangular solves
+```
+
+**`bench_klu`** (#138) — native KLU vs SuiteSparse KLU: factor + solve time,
+fill, block structure, residual.
+
+```bash
+./bench_klu A.mtx B.mtx        # those matrices instead of the built-in suite
+./bench_klu ext:Big.mtx        # external-only row: skip the native run (too slow)
+./bench_klu --csv out.csv      # also write a CSV scoreboard
+```
+
+**`bench_superlu`** (#186) — the same shape for native LU vs SuperLU. SuperLU is
+supernodal (BLAS-3) while native LU is scalar non-supernodal, so the ratio is
+expected to grow with dense fill — quantifying that gap is the point.
+
+The vendor columns require the corresponding build flag; without it each binary
+says so in its header and reports native-only:
+
+```bash
+cmake -B build-klu -DMTL5_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release \
+      -DMTL5_WITH_SUITESPARSE_KLU=ON          # or -DMTL5_WITH_SUPERLU=ON
+```
+
+Real matrices come from `fetch_klu_matrices.sh` / `fetch_superlu_matrices.sh`,
+which download the SuiteSparse sets these scoreboards are tuned around.
+
+**`bench_sparse`** (#297) — the level-scheduled solve phase of the native sparse
+Cholesky / LDLT / LU and supernodal solvers. Native-only, no external library.
+The solves are bit-identical across thread counts by construction (proven in
+CI); this measures how much of that level structure becomes wall-clock speedup.
+
+```bash
+MTL5_NUM_THREADS=8 ./bench_sparse --csv t8.csv --label native-t8
+./bench_sparse --file A.mtx B.mtx     # add SPD/general matrices from disk
+./bench_sparse --sizes 100,150        # 2-D grid side lengths (default 100,160)
+```
+
+`run_scaling_297.sh` drives it as its `sparse` family — one process per thread
+count, pinned to physical cores, into `benchmarks/data/scaling_sparse.csv`.
 
 ## Adding a new backend (e.g. CUDA)
 

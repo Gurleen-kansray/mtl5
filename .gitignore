@@ -25,6 +25,10 @@ compile_commands.json
 CTestTestfile.cmake
 _deps/
 
+# Python bytecode (benchmark tooling: plot_results.py, analyze_*.py)
+__pycache__/
+*.py[cod]
+
 # Compiled objects
 *.o
 *.obj
