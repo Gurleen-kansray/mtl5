@@ -22,7 +22,8 @@
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_CXX_STANDARD": "20",
                 "MTL5_BUILD_TESTS": "OFF",
-                "MTL5_BUILD_EXAMPLES": "OFF"
+                "MTL5_BUILD_EXAMPLES": "OFF",
+                "MTL5_BUILD_BENCHMARKS": "ON"
             }
         },
         {
