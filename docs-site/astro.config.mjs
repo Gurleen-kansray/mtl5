@@ -48,6 +48,10 @@ export default defineConfig({
           autogenerate: { directory: 'algorithms' },
         },
         {
+          label: 'Benchmarking',
+          autogenerate: { directory: 'benchmarks' },
+        },
+        {
           label: 'Design',
           autogenerate: { directory: 'design' },
         },

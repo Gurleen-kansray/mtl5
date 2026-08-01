@@ -89,10 +89,13 @@ const FILE_MAP = {
 };
 
 // ── Root files (relative to repo root) ────────────────────────────
+// The benchmark harness README lives next to the code it documents
+// (benchmarks/), so it is synced from the repo root rather than docs/.
 const ROOT_FILE_MAP = {
   'CHANGELOG.md': 'changelog.md',
   'CONTRIBUTORS.md': 'contributing/contributors.md',
   'CODE-OF-CONDUCT.md': 'contributing/code-of-conduct.md',
+  'benchmarks/README.md': 'benchmarks/index.md',
 };
 
 // ── Link lookup ───────────────────────────────────────────────────
