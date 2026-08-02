@@ -57,6 +57,11 @@ const FILE_MAP = {
   'algorithms/klu.md':                          'algorithms/klu.md',
   'algorithms/supernodal-ldlt.md':              'algorithms/supernodal-ldlt.md',
 
+  // ── Benchmarking ────────────────────────────────────────────────
+  // The harness README itself is synced from the repo root; see ROOT_FILE_MAP.
+  'benchmarks/systems.md':                      'benchmarks/systems.md',
+  'benchmarks/i7-12700k.md':                    'benchmarks/i7-12700k.md',
+
   // ── Design ──────────────────────────────────────────────────────
   'sparse-direct-solvers-design.md':            'design/sparse-direct-solvers.md',
   'position-mixed-precision-acceleration.md':   'design/mixed-precision-acceleration.md',
@@ -104,7 +109,13 @@ function buildLinkLookup() {
   const lookup = {};
   for (const [src, dest] of Object.entries(FILE_MAP)) {
     const slug = dest.replace(/\.md$/, '').replace(/\/index$/, '/');
-    lookup[src] = `${BASE}/${slug.endsWith('/') ? slug : slug + '/'}`;
+    const url = `${BASE}/${slug.endsWith('/') ? slug : slug + '/'}`;
+    lookup[src] = url;
+    // Root files (ROOT_FILE_MAP) sit one level above docs/, so a link from one
+    // of them into docs/ normalizes with a leading "../docs/". Register that
+    // form too, so e.g. benchmarks/README.md can link to a docs/ page with a
+    // path that is correct on GitHub *and* rewritten for the site.
+    lookup[`../docs/${src}`] = url;
   }
   for (const [src, dest] of Object.entries(ROOT_FILE_MAP)) {
     const slug = dest.replace(/\.md$/, '').replace(/\/index$/, '/');
