@@ -45,7 +45,7 @@ the numbers are what a real app compiled that way would get.
 
 ## Layout
 
-```
+```text
 benchmarks/
   bench_all.cpp          dense BLAS/LAPACK driver (sizes/sweeps/suites + --label)
   bench_klu.cpp          sparse scoreboard: native KLU vs SuiteSparse KLU (#138)
