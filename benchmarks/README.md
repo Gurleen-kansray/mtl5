@@ -227,8 +227,10 @@ absolute perf gates flaky. Run it on dedicated hardware.
 [Benchmark systems](../docs/benchmarks/systems.md). Keeping numbers in one place
 means a re-run updates them once; this file documents how to *produce* them.
 
-As of the latest i7-12700K session the GEMM gate **fails** at 1 of 10 sizes
-(76.3% at N = 465, against 80.2–86.5% elsewhere) — a reproducible localized dip.
+As of the latest i7-12700K session the GEMM gate **fails**, but marginally:
+native-fast averages ~82% of OpenBLAS for N ≥ 256 against an 80% threshold, and
+per-size run-to-run spread reaches several points, so which sizes trip it varies
+between runs (#327). Do not read a single size in a single run as signal.
 
 ## Multi-core GEMM scaling (#108)
 
