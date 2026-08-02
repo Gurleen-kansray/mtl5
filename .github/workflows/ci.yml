@@ -6,6 +6,16 @@ on:
     tags: [ 'v[0-9]*' ]
   pull_request:
     branches: [ main ]
+    # `ready_for_review` matters: the Tier 2 regression job gates on
+    # `pull_request.draft == false`, so a PR opened as a draft only ever has
+    # runs in which that job skipped. Without this trigger, promoting the draft
+    # re-evaluates nothing and Tier 2 never runs unless another commit is
+    # pushed -- and `gh pr checks` still reports green, because a skipped job
+    # is not a failure (#333).
+    #
+    # The other three are the defaults, and must be listed explicitly: naming
+    # `types` REPLACES the default set rather than extending it.
+    types: [ opened, synchronize, reopened, ready_for_review ]
 
 jobs:
   # -- ASCII guard: source files must contain only ASCII bytes ---------
