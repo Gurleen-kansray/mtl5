@@ -23,34 +23,65 @@ std::pair<vec::dense_vector<T>, T> householder(const vec::dense_vector<T>& x) {
     const size_type n = x.size();
 
     vec::dense_vector<T> v(n);
+    if (n == 0) return {v, math::zero<T>()};   // no element at index 0 to write
+
+    // Scale by the largest magnitude before squaring. Forming sum(x(i)^2)
+    // directly underflows to zero once the entries are small -- and the old
+    // `sigma == 0` test only caught EXACT zero, so a merely tiny sigma fell
+    // through to `beta = 2*v0*v0 / (sigma + v0*v0)` with both terms flushed to
+    // zero, i.e. 0/0 = NaN, plus `v(i) /= v0` overflowing to infinity.
+    //
+    // The SVD's alternating-QR iteration drives exactly that: as it converges
+    // the trailing columns shrink toward zero, so the reflectors underflow and
+    // poison an already-correct answer with NaN (#337). Scaling keeps the
+    // squares O(1), so the only way sigma vanishes now is that x(1:) really is
+    // negligible against x(0) -- which is the genuine "already along e_1" case.
+    T scale = math::zero<T>();
+    for (size_type i = 0; i < n; ++i) {
+        const T axi = abs(x(i));
+        if (axi > scale) scale = axi;
+    }
+
     for (size_type i = 0; i < n; ++i)
         v(i) = x(i);
-
-    // Compute sigma = sum(x(1:end)^2)
-    T sigma = math::zero<T>();
-    for (size_type i = 1; i < n; ++i)
-        sigma += x(i) * x(i);
-
     v(0) = math::one<T>();
 
-    if (sigma == math::zero<T>()) {
-        // x is already along e_1
+    if (scale == math::zero<T>())
+        return {v, math::zero<T>()};   // x is the zero vector
+
+    // sigma = sum((x(i)/scale)^2) for i >= 1, computed in the scaled variables
+    T sigma = math::zero<T>();
+    for (size_type i = 1; i < n; ++i) {
+        const T xs = x(i) / scale;
+        sigma += xs * xs;
+    }
+
+    if (sigma == math::zero<T>())
+        return {v, math::zero<T>()};   // x is already along e_1
+
+    const T x0 = x(0) / scale;
+    const T norm_x = sqrt(x0 * x0 + sigma);
+    T v0;
+    if (x0 <= math::zero<T>())
+        v0 = x0 - norm_x;
+    else
+        v0 = -sigma / (x0 + norm_x);
+
+    const T beta = T(2) * v0 * v0 / (sigma + v0 * v0);
+
+    // beta == 0 means the reflection is the identity, so v carries no
+    // information -- and computing it would divide by a v0 small enough to
+    // overflow. Return a clean unit v: qr_factor STORES v below the diagonal,
+    // so letting huge or infinite entries through would poison the factor and
+    // every later use of it.
+    if (beta == math::zero<T>())
         return {v, math::zero<T>()};
-    }
 
-    T norm_x = sqrt(x(0) * x(0) + sigma);
-    if (x(0) <= math::zero<T>()) {
-        v(0) = x(0) - norm_x;
-    } else {
-        v(0) = -sigma / (x(0) + norm_x);
-    }
-
-    T beta = T(2) * v(0) * v(0) / (sigma + v(0) * v(0));
-
-    // Normalize v so that v(0) = 1
-    T v0 = v(0);
-    for (size_type i = 0; i < n; ++i)
-        v(i) /= v0;
+    // Normalize so that v(0) = 1. Both numerator and denominator are in the
+    // scaled variables, so the ratio is the same as before the scaling.
+    for (size_type i = 1; i < n; ++i)
+        v(i) = (x(i) / scale) / v0;
+    v(0) = math::one<T>();
 
     return {v, beta};
 }
@@ -71,6 +102,10 @@ void apply_householder_left(M& A, const vec::dense_vector<T>& v, T beta,
     // Empty or beyond-end target column: no work (matches the serial loop, and
     // avoids an unsigned underflow in n - col before deriving the work range).
     if (col >= n) return;
+    // beta == 0 is the identity reflection. Returning early is not just an
+    // optimisation: `beta * v(i) * w` would evaluate 0 * inf = NaN if any
+    // reflector entry had overflowed.
+    if (beta == math::zero<T>()) return;
     const size_type ncols = n - col;
     const std::size_t grain = std::max<std::size_t>(
         std::size_t{1}, std::size_t{65536} / (vlen ? static_cast<std::size_t>(vlen) : std::size_t{1}));
@@ -106,6 +141,8 @@ void apply_householder_right(M& A, const vec::dense_vector<T>& v, T beta,
     // Empty or beyond-end target row: no work (matches the serial loop, and
     // avoids an unsigned underflow in m - row before deriving the work range).
     if (row >= m) return;
+    // Identity reflection -- see the note in apply_householder_left.
+    if (beta == math::zero<T>()) return;
     const size_type nrows = m - row;
     const std::size_t grain = std::max<std::size_t>(
         std::size_t{1}, std::size_t{65536} / (vlen ? static_cast<std::size_t>(vlen) : std::size_t{1}));
