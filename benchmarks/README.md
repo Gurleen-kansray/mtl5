@@ -45,7 +45,7 @@ the numbers are what a real app compiled that way would get.
 
 ## Layout
 
-```
+```text
 benchmarks/
   bench_all.cpp          dense BLAS/LAPACK driver (sizes/sweeps/suites + --label)
   bench_klu.cpp          sparse scoreboard: native KLU vs SuiteSparse KLU (#138)
@@ -222,11 +222,13 @@ it can run in an opt-in workflow. It is **not** wired into the per-push CI:
 shared CI runners have unstable clocks and no P-core pinning, which makes
 absolute perf gates flaky. Run it on dedicated hardware.
 
-**Measured result** (i7-12700K, 1 P-core, fp64, single-thread — see
-`data/README.md`): GEMM native-fast is **80–84% of OpenBLAS for all N ≥ 256**
-(~76–78% of FMA peak); GEMV is **~100–116% of OpenBLAS** and `dot`/`nrm2` are at
-or above it (both bandwidth-bound). The GEMM gate **passes** at the 80% / N≥256
-threshold. This is single-threaded; multithreading is #92.
+**Measured results live on the per-system result pages, not here** — see
+[Intel i7-12700K](../docs/benchmarks/i7-12700k.md), indexed from
+[Benchmark systems](../docs/benchmarks/systems.md). Keeping numbers in one place
+means a re-run updates them once; this file documents how to *produce* them.
+
+As of the latest i7-12700K session the GEMM gate **fails** at 1 of 10 sizes
+(76.3% at N = 465, against 80.2–86.5% elsewhere) — a reproducible localized dip.
 
 ## Multi-core GEMM scaling (#108)
 
@@ -246,11 +248,10 @@ benchmarks/analyze_scaling.py benchmarks/data/gemm_scaling_*.csv \
 > **Set `BENCH_PCPUS` to your topology** — one logical id per physical core
 > (`lscpu -e=CPU,CORE,MAXMHZ`). The default is an i7-12700K's 8 P-cores.
 
-**Measured (i7-12700K, fp64, N=2048):** native-fast scales **5.8× on 8 P-cores**
-(56.8 → 330.8 GFLOP/s), vs OpenBLAS **7.15×** (528) and MKL **7.30×** (547). So
-native-fast scales well to ~4 cores (3.7×, ~92% efficiency) but its efficiency
-trails the tuned libraries at high thread counts — the single-thread ~80%-of-
-OpenBLAS gap widens to ~62% at 8 threads. The simple per-`(jc,pc)` thread-team
+Measured scaling numbers are on the
+[i7-12700K result page](../docs/benchmarks/i7-12700k.md). The structural finding
+is stable across sessions: native-fast tracks the tuned libraries closely to 2
+threads and loses ground as the count grows, because the per-`(jc,pc)` thread-team
 spawn and `ic`-only partition leave room for a persistent thread pool and
 multi-loop (BLIS-style) parallelization — a future optimization, tracked
 separately from this measurement.
