@@ -61,6 +61,7 @@ const FILE_MAP = {
   // The harness README itself is synced from the repo root; see ROOT_FILE_MAP.
   'benchmarks/systems.md':                      'benchmarks/systems.md',
   'benchmarks/i7-12700k.md':                    'benchmarks/i7-12700k.md',
+  'benchmarks/ryzen-9-8945hs.md':               'benchmarks/ryzen-9-8945hs.md',
 
   // ── Design ──────────────────────────────────────────────────────
   'sparse-direct-solvers-design.md':            'design/sparse-direct-solvers.md',
