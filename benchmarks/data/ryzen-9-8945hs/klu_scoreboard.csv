@@ -1,0 +1,4 @@
+matrix,n,nnz,nblocks,largest_block,native_status,native_s,native_fill,native_resid,ext_status,ext_s,ext_fill,ext_resid,time_ratio,fill_ratio
+rajat14,180,1503,19,162,ok,0.0005367,1504,2.65164e-12,ok,0.0001325,1364,1.36423e-12,4.05057,1.10264
+add32,4960,23884,1,4960,ok,0.0095339,29147,1.13924e-15,ok,0.0015198,28902,7.59494e-16,6.27313,1.00848
+rajat30,643994,6175377,11705,632196,skip,,,,ok,9.51192,32327852,0.000280569,,

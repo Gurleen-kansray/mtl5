@@ -2,7 +2,7 @@
 
 Full benchmark results for the `ryzen-9-8945hs` system described on the
 [benchmark systems](systems.md) page. Measured 2026-08-02 in a single session:
-every dense figure below comes from the same set of builds, on the same machine,
+every figure below comes from the same set of builds, on the same machine,
 under the pinning policy documented there.
 
 This is the first **Windows / MSVC** results page, and the first on **AMD Zen 4**.
@@ -31,6 +31,10 @@ MKL comes from the `mkl-devel` wheel). These are not portable performance claims
   is no tuned native LAPACK path.
 - **native-fast scales well** (6.16× on 8 cores, 77% efficiency) — the parallel
   decomposition is sound; it is the single-core kernel that is behind.
+- **Native sparse solvers lose to SuiteSparse everywhere on MSVC** — native KLU
+  wins nothing here (it beat SuiteSparse on `rajat14` under GCC), and native LU
+  trails SuperLU by 2.5–23.8×. The fill ratios match the i7 exactly, so the extra
+  gap is again the slower MSVC native kernel, not ordering quality.
 
 ## Dense BLAS (single-threaded)
 
@@ -148,12 +152,51 @@ with thread count. OpenBLAS is the clear multi-core leader on this part.
 
 ## Sparse direct solvers
 
-Not yet measured on this machine. The infrastructure is in place — SuperLU 7.0.1
-and SuiteSparse KLU 7.12.3 are installed via vcpkg and link against
-`bench_superlu` / `bench_klu` — but the scoreboards (#138, #186) and the #297
-threaded kernel-family sweep require the SuiteSparse matrix downloads and long
-factorization runs, and are left as a follow-up. See the
-[i7-12700K sparse results](i7-12700k.md#sparse-direct-solvers) for the reference
+Single-threaded, pinned to physical core 0, SuiteSparse matrices. SuperLU's
+internal BLAS calls resolve against the same optimized OpenBLAS used above, so
+its supernodal kernels are not handicapped. Time ratios are native ÷ external
+(>1 means the vendor is faster).
+
+### Native KLU vs SuiteSparse KLU (#138)
+
+| Matrix | n | nnz | blocks | native (s) | KLU (s) | ratio | fill ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `rajat14` | 180 | 1,503 | 19 | 0.001 | 0.000 | 4.1× | 1.10 |
+| `add32` | 4,960 | 23,884 | 1 | 0.010 | 0.002 | 6.3× | 1.01 |
+| `rajat30` | 643,994 | 6,175,377 | 11,705 | *skipped* | 9.51 | — | — |
+
+**Unlike on the i7, native KLU wins nothing here.** On the i7/GCC build native was
+3.4× *faster* than SuiteSparse on the block-triangular `rajat14` (ratio 0.29×);
+under MSVC it is 4.1× *slower* on the same matrix, and 6.3× slower on the
+single-block `add32` (vs 4.6× on the i7). Fill is essentially identical on both
+solvers (1.01–1.10), so this is purely kernel speed — and the native kernel is
+markedly slower under MSVC, the same theme as the dense native path. `rajat30`
+is marked external-only; the native run is skipped.
+
+### Native LU vs SuperLU (#186)
+
+| Matrix | n | nnz | native (s) | SuperLU (s) | ratio | fill ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| `add32` | 4,960 | 23,884 | 0.009 | 0.003 | 2.5× | 0.53 |
+| `wang4` | 26,068 | 177,196 | 7.56 | 2.59 | 2.9× | 0.53 |
+| `wang3` | 26,064 | 177,168 | 6.90 | 2.09 | 3.3× | 0.50 |
+| `raefsky3` | 21,200 | 1,488,768 | 10.43 | 1.12 | 9.3× | 1.16 |
+| `bbmat` | 38,744 | 1,771,722 | 133.6 | 5.61 | **23.8×** | 2.49 |
+
+**The fill-ratio story reproduces the i7 exactly** — 0.50–0.53 on `add32`/`wang3`/
+`wang4`, 1.16 on `raefsky3`, 2.49 on `bbmat` — and the two matrices where native
+produces *more* fill than SuperLU (`raefsky3`, `bbmat`) are again the two worst
+results by a wide margin. The mechanism holds: on dense-fill problems native
+loses twice, doing more arithmetic with scalar non-supernodal kernels.
+
+**What differs from the i7 is the baseline.** There, native *won* `add32` (0.30×,
+with half the fill); here the same matrix goes to SuperLU by 2.5×, and `bbmat`
+widens from 18× to 23.8×. The extra fill is identical to the i7 — the additional
+gap is the slower MSVC native kernel, consistent with every other native result
+on this page.
+
+The #297 threaded kernel-family sweep is not reproduced here; see the
+[i7-12700K results](i7-12700k.md#threaded-kernel-families-297) for that
 characterization.
 
 ## Caveats
@@ -196,4 +239,14 @@ regenerated with:
 benchmarks/plot_results.py   benchmarks/data/ryzen-9-8945hs/blas_sweep_*.csv   --out docs/img/benchmarks/ryzen/blas-sweep-gflops.png
 benchmarks/plot_results.py   benchmarks/data/ryzen-9-8945hs/lapack_sweep_*.csv --out docs/img/benchmarks/ryzen/lapack-sweep-gflops.png
 benchmarks/analyze_scaling.py benchmarks/data/ryzen-9-8945hs/gemm_scaling_*.csv --plot docs/img/benchmarks/ryzen/gemm-scaling.png
+```
+
+The sparse scoreboards use `bench_klu` / `bench_superlu` (built with the vcpkg
+toolchain + `-DMTL5_WITH_SUITESPARSE_KLU=ON -DMTL5_WITH_SUPERLU=ON`, plus a BLAS
+for SuperLU's internal kernels), run against the SuiteSparse matrices fetched by
+`benchmarks/fetch_klu_matrices.sh` / `fetch_superlu_matrices.sh`:
+
+```powershell
+bench_klu.exe     --csv benchmarks\data\ryzen-9-8945hs\klu_scoreboard.csv     data\klu\rajat14\rajat14.mtx data\klu\add32\add32.mtx ext:data\klu\rajat30\rajat30.mtx
+bench_superlu.exe --csv benchmarks\data\ryzen-9-8945hs\superlu_scoreboard.csv data\superlu\add32\add32.mtx data\superlu\wang4\wang4.mtx data\superlu\wang3\wang3.mtx data\superlu\raefsky3\raefsky3.mtx data\superlu\bbmat\bbmat.mtx
 ```
