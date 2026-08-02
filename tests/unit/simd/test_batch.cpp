@@ -29,6 +29,16 @@ TEMPLATE_TEST_CASE("batch size is a positive compile-time constant", "[simd]", f
     using B = mtl::simd::batch<TestType>;
     STATIC_REQUIRE(B::size >= 1);
     STATIC_REQUIRE(mtl::simd::width<TestType> == B::size);
+
+    // A build configured -DMTL5_WITH_HIGHWAY=ON that still resolves to the
+    // size == 1 scalar fallback is silently covering nothing: it compiles and
+    // passes every other assertion here while never touching the SIMD path.
+    // On x86-64 the SSE2 baseline is guaranteed, so a vectorized batch must be
+    // wider than one element. Restricted to x86-64 because other targets can
+    // legitimately have a scalar baseline.
+#if defined(MTL5_HAS_HIGHWAY) && (defined(__x86_64__) || defined(_M_X64))
+    STATIC_REQUIRE(B::size > 1);
+#endif
 }
 
 TEMPLATE_TEST_CASE("batch load/store round-trip (aligned + unaligned)", "[simd]", float, double) {
