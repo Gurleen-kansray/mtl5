@@ -55,7 +55,12 @@ auto two_norm(const V& v) {
             AT::add_product(acc, a, a);               // acc += a*a in Accumulator
         }
         using std::sqrt;
-        return static_cast<mag_t>(sqrt(AT::template value<Accumulator>(acc)));
+        // Round out to the accumulator's own arithmetic precision, not to the
+        // accumulator TYPE: the latter is a no-op for a plain arithmetic
+        // accumulator but yields an fma_accumulator or a quire otherwise, and
+        // neither has a sqrt (#324).
+        using round_t = math::accumulator_round_type_t<Accumulator, mag_t>;
+        return static_cast<mag_t>(sqrt(AT::template value<round_t>(acc)));
     } else {
 #ifdef MTL5_HAS_BLAS
     // BLAS takes int; fall back to the loop for vectors larger than INT_MAX.
@@ -124,7 +129,12 @@ auto frobenius_norm(const M& m) {
             }
         }
         using std::sqrt;
-        return static_cast<mag_t>(sqrt(AT::template value<Accumulator>(acc)));
+        // Round out to the accumulator's own arithmetic precision, not to the
+        // accumulator TYPE: the latter is a no-op for a plain arithmetic
+        // accumulator but yields an fma_accumulator or a quire otherwise, and
+        // neither has a sqrt (#324).
+        using round_t = math::accumulator_round_type_t<Accumulator, mag_t>;
+        return static_cast<mag_t>(sqrt(AT::template value<round_t>(acc)));
     } else {
         auto acc = math::zero<mag_t>();
         for (typename M::size_type r = 0; r < m.num_rows(); ++r) {

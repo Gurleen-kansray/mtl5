@@ -36,7 +36,8 @@
 //
 // Used by the sparse factorizations and the dense BLAS-level operations.
 
-#include <cmath>   // std::fma
+#include <cmath>        // std::fma
+#include <type_traits>
 
 namespace mtl::math {
 
@@ -113,5 +114,37 @@ struct accumulator_traits<fma_accumulator<T>, Value> {
         a.sum = fma(static_cast<T>(m), static_cast<T>(v), a.sum);
     }
 };
+
+/// The arithmetic type an accumulator should be rounded out to before a scalar
+/// post-processing step such as `sqrt`.
+///
+/// `value<Result>` rounds the accumulator out to a DELIVERY type. Passing the
+/// accumulator itself is a no-op for configuration 1 and so appears to work,
+/// but for `fma_accumulator<T>` it yields an `fma_accumulator<T>` and for a
+/// super-accumulator a quire -- neither of which has a `sqrt` (#324).
+///
+/// Rounding straight to the magnitude type compiles everywhere, but throws away
+/// the precision the accumulator was chosen for: the sum would be narrowed to
+/// the element magnitude BEFORE the square root. So prefer the accumulator's own
+/// arithmetic precision where one is nameable:
+///
+///   * configuration 1 (arithmetic `Acc`)   -> `Acc` itself
+///   * configuration 2 (`fma_accumulator<T>`) -> `T`
+///   * configuration 3 (custom/quire)       -> `Mag`, the documented delivery
+///     type. A super-accumulator is exact, so this is the single final
+///     round-out its contract already promises, and external specializations
+///     need not provide anything new.
+template <typename Acc, typename Mag>
+struct accumulator_round_type {
+    using type = std::conditional_t<std::is_arithmetic_v<Acc>, Acc, Mag>;
+};
+
+template <typename T, typename Mag>
+struct accumulator_round_type<fma_accumulator<T>, Mag> {
+    using type = T;
+};
+
+template <typename Acc, typename Mag>
+using accumulator_round_type_t = typename accumulator_round_type<Acc, Mag>::type;
 
 } // namespace mtl::math
