@@ -11,8 +11,10 @@
 // 1.5x neighbours so a plain run measures padding / odd-size overhead.
 
 #include <benchmarks/harness/runner.hpp>
+#include <mtl/util/system_info.hpp>
 #include <algorithm>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <set>
 #include <sstream>
@@ -105,6 +107,10 @@ static void print_build_info(const std::string& label) {
     std::cout << " generic-only";
 #endif
     std::cout << " ]\n\n";
+
+    // Self-identify the machine so the run is tagged with the hardware, OS, and
+    // compiler that produced the numbers (feeds docs/benchmarks/systems.md).
+    std::cout << mtl::util::to_string(mtl::util::identify()) << "\n\n";
 }
 
 static void print_usage() {
@@ -285,6 +291,13 @@ int main(int argc, char* argv[]) {
 
     if (!csv_path.empty()) {
         rep.write_csv(csv_path);
+        // Write a machine-parseable companion tag beside the CSV so each result
+        // set records the exact system it was produced on (key=value lines).
+        const std::string sysinfo_path = csv_path + ".sysinfo";
+        if (std::ofstream si_out{sysinfo_path}) {
+            si_out << "label=" << label << "\n"
+                   << mtl::util::to_keyvals(mtl::util::identify());
+        }
     }
 
     return 0;

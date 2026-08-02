@@ -48,3 +48,6 @@ compile_all("true" "array" "Tests/array" "MTL5::mtl5;Catch2::Catch2WithMain" ${A
 
 file(GLOB TENSOR_SRC "tensor/*.cpp")
 compile_all("true" "tensor" "Tests/tensor" "MTL5::mtl5;Catch2::Catch2WithMain" ${TENSOR_SRC})
+
+file(GLOB UTIL_SRC "util/*.cpp")
+compile_all("true" "util" "Tests/util" "MTL5::mtl5;Catch2::Catch2WithMain" ${UTIL_SRC})
