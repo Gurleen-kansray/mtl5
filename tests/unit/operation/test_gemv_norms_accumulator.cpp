@@ -78,3 +78,100 @@ TEST_CASE("frobenius_norm accumulator policy", "[operation][norms][accumulator]"
     REQUIRE_THAT(frobenius_norm(m), WithinRel(5.0, 1e-12));
     REQUIRE_THAT(frobenius_norm<double>(m), WithinRel(5.0, 1e-12));
 }
+
+// ---------------------------------------------------------------------------
+// Regression: #324 -- two_norm<Acc>/frobenius_norm<Acc> rounded the accumulator
+// out to the ACCUMULATOR type and then took its square root. That is a no-op
+// for a plain arithmetic accumulator, which is why the cases above passed and
+// hid this, but it yields an fma_accumulator<T> for configuration 2 and a
+// super-accumulator for configuration 3 -- neither of which has a sqrt, so
+// neither non-trivial configuration compiled at all.
+//
+// These are primarily compile-time pins: the failure was at instantiation.
+// ---------------------------------------------------------------------------
+
+// Configuration 3 stand-in: an exact compensated super-accumulator, playing the
+// role of a Universal quire. MTL5 stays free of any external number library, so
+// the real quire specialization lives in the peer repo; this exercises the same
+// contract -- a custom Acc with no sqrt of its own.
+namespace {
+struct kahan_acc { long double sum{}, c{}; };
+}
+namespace mtl::math {
+template <typename Value>
+struct accumulator_traits<kahan_acc, Value> {
+    using Acc = kahan_acc;
+    static void clear(Acc& a) { a.sum = 0; a.c = 0; }
+    static void assign(Acc& a, const Value& v) { a.sum = static_cast<long double>(v); a.c = 0; }
+    template <typename Result = Value>
+    static Result value(const Acc& a) { return static_cast<Result>(a.sum); }
+    static void add_product(Acc& a, const Value& m, const Value& v) {
+        long double y = static_cast<long double>(m) * static_cast<long double>(v) - a.c;
+        long double t = a.sum + y;
+        a.c = (t - a.sum) - y;
+        a.sum = t;
+    }
+};
+}
+
+TEST_CASE("two_norm/frobenius_norm accept every accumulator configuration (#324)",
+          "[operation][norms][accumulator][regression]") {
+    const std::size_t n = 20000;
+    vec::dense_vector<float> v(n);
+    for (std::size_t i = 0; i < n; ++i) v[i] = 1.0f + static_cast<float>(i % 7) * 1e-6f;
+
+    long double ref = 0.0L;
+    for (std::size_t i = 0; i < n; ++i)
+        ref += static_cast<long double>(v[i]) * static_cast<long double>(v[i]);
+    const double exact = static_cast<double>(std::sqrt(ref));
+
+    // Configuration 1: plain arithmetic accumulator (already worked).
+    const auto c1 = two_norm<double>(v);
+    // Configuration 2: fused multiply-add accumulator -- did not compile.
+    const auto c2 = two_norm<math::fma_accumulator<double>>(v);
+    // Configuration 3: custom super-accumulator -- did not compile.
+    const auto c3 = two_norm<kahan_acc>(v);
+
+    // All deliver the element magnitude type, as the docstring promises.
+    STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(c1)>, float>);
+    STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(c2)>, float>);
+    STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(c3)>, float>);
+
+    // Each is far more accurate than a bare float reduction over this vector.
+    const auto plain = two_norm(v);
+    REQUIRE(std::abs(c1 - exact) <= std::abs(static_cast<double>(plain) - exact));
+    REQUIRE_THAT(static_cast<double>(c1), WithinRel(exact, 1e-6));
+    REQUIRE_THAT(static_cast<double>(c2), WithinRel(exact, 1e-6));
+    REQUIRE_THAT(static_cast<double>(c3), WithinRel(exact, 1e-6));
+
+    mat::dense2D<float> M(120, 120);
+    for (std::size_t r = 0; r < 120; ++r)
+        for (std::size_t c = 0; c < 120; ++c)
+            M(r, c) = 1.0f + static_cast<float>((r + c) % 5) * 1e-6f;
+
+    long double fref = 0.0L;
+    for (std::size_t r = 0; r < 120; ++r)
+        for (std::size_t c = 0; c < 120; ++c)
+            fref += static_cast<long double>(M(r, c)) * static_cast<long double>(M(r, c));
+    const double fexact = static_cast<double>(std::sqrt(fref));
+
+    const auto f1 = frobenius_norm<double>(M);
+    const auto f2 = frobenius_norm<math::fma_accumulator<double>>(M);
+    const auto f3 = frobenius_norm<kahan_acc>(M);
+    STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(f2)>, float>);
+    REQUIRE_THAT(static_cast<double>(f1), WithinRel(fexact, 1e-6));
+    REQUIRE_THAT(static_cast<double>(f2), WithinRel(fexact, 1e-6));
+    REQUIRE_THAT(static_cast<double>(f3), WithinRel(fexact, 1e-6));
+}
+
+TEST_CASE("accumulator_round_type names the accumulator's own precision (#324)",
+          "[operation][norms][accumulator][regression]") {
+    // Rounding out to the magnitude type would compile, but would narrow the
+    // sum BEFORE the square root and discard what the accumulator bought.
+    STATIC_REQUIRE(std::is_same_v<math::accumulator_round_type_t<double, float>, double>);
+    STATIC_REQUIRE(std::is_same_v<
+        math::accumulator_round_type_t<math::fma_accumulator<double>, float>, double>);
+    // A custom accumulator has no nameable arithmetic type, so it delivers in
+    // the magnitude type -- external specializations need supply nothing new.
+    STATIC_REQUIRE(std::is_same_v<math::accumulator_round_type_t<kahan_acc, float>, float>);
+}
