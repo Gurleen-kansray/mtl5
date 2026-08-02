@@ -28,9 +28,16 @@ Full system description and the analysis of these numbers are on the
 data; the result page interprets it** — so a re-run updates the findings in one
 place.
 
-Single-threaded for stable, comparable per-size numbers
-(`OMP_NUM_THREADS=1`, plus `OPENBLAS_NUM_THREADS=1` / `MKL_NUM_THREADS=1`), and
-pinned to a performance core so the small L1 kernels don't land on an E-core.
+The sweeps are single-threaded for stable, comparable per-size numbers. Every
+backend's threading control is pinned to 1 — `OMP_NUM_THREADS`,
+`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `BLIS_NUM_THREADS` and
+`MTL5_NUM_THREADS` — so no backend quietly uses more of the machine than
+another, and the run is pinned to a performance core so the small L1 kernels
+don't land on an E-core.
+
+The `gemm_scaling_*` and `scaling_*` files are the exception: there the thread
+count is the axis being measured, so the relevant variable is swept over
+{1,2,4,8} while the rest stay at 1.
 
 ## Files
 
