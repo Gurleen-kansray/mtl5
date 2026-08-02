@@ -308,6 +308,82 @@ jobs:
           MTL5_NUM_THREADS: 4
           TSAN_OPTIONS: halt_on_error=1
 
+  # -- Benchmark sources: build only, never timed -----------------------
+  # MTL5_BUILD_BENCHMARKS defaults OFF and no other job enables it, so
+  # benchmarks/*.cpp is compiled by no runner. That is how bench_klu.cpp and
+  # bench_superlu.cpp came to reference private members of lu_numeric and stayed
+  # broken until someone built them locally (#319).
+  #
+  # This lane only COMPILES them. Timed runs need pinned cores and a quiet
+  # machine, which shared runners cannot provide -- absolute perf gates here
+  # would be flaky, so the numbers are produced on dedicated hardware and
+  # published under docs/benchmarks/ instead.
+  #
+  # Two configurations, because most of the vendor-comparison code in the
+  # scoreboards sits behind #ifdef MTL5_HAS_KLU / MTL5_HAS_SUPERLU and is
+  # invisible to a plain build:
+  #   native  -- no external libraries (the native-only paths)
+  #   vendors -- BLAS/LAPACK + KLU + SuperLU (the guarded comparison paths)
+  benchmarks:
+    name: Linux x64 benchmarks build (${{ matrix.config }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - config: native
+            cmake_flags: ""
+          - config: vendors
+            cmake_flags: >-
+              -DMTL5_WITH_BLAS=ON -DMTL5_WITH_LAPACK=ON
+              -DMTL5_WITH_SUITESPARSE_KLU=ON -DMTL5_WITH_SUPERLU=ON
+
+    # Same trusted-run gate as the build job: forked PRs skip sccache so they
+    # cannot poison the shared GHA cache.
+    env:
+      SCCACHE_LAUNCHER: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'sccache' || '' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up sccache
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Install vendor libraries
+        if: matrix.config == 'vendors'
+        run: >
+          sudo apt-get update &&
+          sudo apt-get install -y
+          libopenblas-dev liblapack-dev libsuitesparse-dev libsuperlu-dev
+
+      - name: Configure
+        run: >
+          cmake -B build-bench
+          -DCMAKE_CXX_STANDARD=20
+          -DCMAKE_C_COMPILER_LAUNCHER=${{ env.SCCACHE_LAUNCHER }}
+          -DCMAKE_CXX_COMPILER_LAUNCHER=${{ env.SCCACHE_LAUNCHER }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DMTL5_BUILD_BENCHMARKS=ON
+          -DMTL5_BUILD_TESTS=OFF
+          -DMTL5_BUILD_EXAMPLES=OFF
+          ${{ matrix.cmake_flags }}
+
+      - name: Build every benchmark target
+        run: >
+          cmake --build build-bench --parallel 2
+          --target bench_all bench_klu bench_superlu bench_sparse
+
+      # Link/startup check only -- bench_all parses arguments and exits. The
+      # other three have no --help and would start a real timed suite, so they
+      # are built but not run.
+      - name: Smoke check
+        run: ./build-bench/benchmarks/bench_all --help
+
   # ── Tier 2: Regression tests on Linux (~10 min) ─────────────────────
   # Runs only on non-draft PRs, after Tier 1 passes.
   # Exercises dense, sparse, and iterative solvers at 100–50K DOF.
