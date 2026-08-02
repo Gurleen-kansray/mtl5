@@ -33,7 +33,10 @@ public:
                 sum += l_data_[k] * x(l_indices_[k]);
             x(i) = b(i) - sum;
         }
-        // Back substitution: U*x = y
+        // Back substitution: U*x = y, i.e.
+        //   x(i) = (y(i) - sum_{j>i} U(i,j)*x(j)) / U(i,i)
+        // u_data_ holds only the strictly upper entries, so the sum is exactly
+        // the j > i terms and the diagonal divides once (#323).
         for (size_type ii = 0; ii < n_; ++ii) {
             size_type i = n_ - 1 - ii;
             auto sum = math::zero<value_type>();
@@ -58,7 +61,8 @@ private:
         // Work with dense row copies for ILU(0) factorization
         // Store result in separate L and U CRS structures
         // L: strictly lower triangular (unit diagonal implicit)
-        // U: upper triangular including diagonal
+        // U: strictly upper triangular; the diagonal is held separately in
+        //    u_diag_, so no consumer has to filter it out
 
         // First pass: copy A into a dense working matrix (row by row)
         // Then perform IKJ variant of ILU(0)
@@ -87,20 +91,31 @@ private:
                 row_work[k] /= u_diag_[k];
 
                 // Update: row(j) -= row(k) * U(k,j) for j > k, only at existing positions
+                // u_rows[k] is strictly upper by construction, so every uj > k.
                 for (const auto& [uj, uv] : u_rows[k]) {
-                    if (uj > k && row_nz[uj]) {
+                    if (row_nz[uj]) {
                         row_work[uj] -= row_work[k] * uv;
                     }
                 }
             }
 
-            // Split into L (j < i) and U (j >= i)
+            // Split into L (j < i), the diagonal, and U (j > i).
+            //
+            // The diagonal is kept ONLY in u_diag_, never also in u_rows. It
+            // used to be stored in both, and the back substitution then summed
+            // all of u_rows[i] as though it were the strictly upper part and
+            // divided by u_diag_[i] as well -- subtracting U(i,i)*x(i) from
+            // y(i) and dividing the difference by U(i,i), which is wrong for
+            // every input (#323). Storing it once removes the possibility:
+            // there is no diagonal entry left in u_rows for a consumer to
+            // forget to skip.
             for (auto j : nz_cols) {
                 if (j < i) {
                     l_rows[i].emplace_back(j, row_work[j]);
-                } else {
+                } else if (j > i) {
                     u_rows[i].emplace_back(j, row_work[j]);
-                    if (j == i) u_diag_[i] = row_work[j];
+                } else {
+                    u_diag_[i] = row_work[j];
                 }
             }
 
