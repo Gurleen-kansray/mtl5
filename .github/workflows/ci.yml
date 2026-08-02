@@ -308,6 +308,99 @@ jobs:
           MTL5_NUM_THREADS: 4
           TSAN_OPTIONS: halt_on_error=1
 
+  # -- Highway SIMD backend: the only lane that compiles it ---------------
+  # No other job sets MTL5_WITH_HIGHWAY, so MTL5_HAS_HIGHWAY is never defined
+  # and every other lane builds the portable scalar fallback in simd/batch.hpp
+  # (size == 1). The Highway specialization -- the actual SIMD register type
+  # under the blocked GEMM and SIMD GEMV -- was therefore compiled nowhere,
+  # while `-DMTL5_WITH_HIGHWAY=ON` is what the native-fast variant and every
+  # published benchmark number use. A lane/masking/FMA-ordering bug there would
+  # pass CI and be broken in the builds people actually run (#330).
+  #
+  # Unlike MTL5_NATIVE_FAST_GEMM -- which tests opt into by #define, so the
+  # mult() fast-path dispatch IS covered elsewhere -- this cannot be faked in a
+  # test: it needs Highway's headers and library.
+  #
+  # This lane RUNS the suite, not just builds it. Compile coverage alone would
+  # miss numerical divergence between the SIMD and scalar paths, which is the
+  # failure mode that matters.
+  #
+  # Ubuntu 24.04 ships Highway 1.0.7, so find_package(hwy 1.4) misses and
+  # FetchContent clones and builds 1.4.0. _deps is cached on the pinned tag so
+  # that cost is paid once per cache lifetime rather than every run.
+  highway:
+    name: Linux x64 Highway SIMD (${{ matrix.cxx }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cc: gcc-13
+            cxx: g++-13
+          - cc: clang-18
+            cxx: clang++-18
+
+    # Same trusted-run gate as the build job: forked PRs skip sccache so they
+    # cannot poison the shared GHA cache.
+    env:
+      SCCACHE_LAUNCHER: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'sccache' || '' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up sccache
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      # Keyed on CMakeLists.txt, which carries the pinned Highway GIT_TAG, so
+      # bumping the tag invalidates the cache rather than silently reusing the
+      # old checkout.
+      - name: Cache the fetched Highway build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build-hwy/_deps
+          key: highway-${{ runner.os }}-${{ matrix.cxx }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            highway-${{ runner.os }}-${{ matrix.cxx }}-
+
+      # MTL5_NATIVE_ARCH is deliberately NOT set: -march=native would pin the
+      # build to whatever microarchitecture the runner happens to be. Highway's
+      # static dispatch still compiles its SIMD path at the baseline target,
+      # which is what this lane exists to cover.
+      - name: Configure
+        run: >
+          cmake -B build-hwy
+          -DCMAKE_CXX_STANDARD=20
+          -DCMAKE_C_COMPILER=${{ matrix.cc }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DCMAKE_C_COMPILER_LAUNCHER=${{ env.SCCACHE_LAUNCHER }}
+          -DCMAKE_CXX_COMPILER_LAUNCHER=${{ env.SCCACHE_LAUNCHER }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DMTL5_WITH_HIGHWAY=ON
+          -DMTL5_NATIVE_FAST_GEMM=ON
+
+      - name: Build
+        run: cmake --build build-hwy --parallel 2
+
+      # Fails loudly if the configure silently fell back to the scalar path --
+      # otherwise this lane could go green while covering nothing. The option
+      # must be on AND Highway must have actually been built, since a cache
+      # restore or a find_package hit are both plausible ways to end up with
+      # neither. (simd/test_batch.cpp additionally static-asserts that the batch
+      # is wider than one element under MTL5_HAS_HIGHWAY on x86-64, so a silent
+      # fallback fails the suite too, not just this step.)
+      - name: Verify Highway is actually active
+        run: |
+          grep -q 'MTL5_WITH_HIGHWAY:BOOL=ON' build-hwy/CMakeCache.txt
+          find build-hwy -name 'libhwy*' -print -quit | grep -q .
+
+      - name: Test
+        run: ctest --test-dir build-hwy --output-on-failure
+
   # -- Benchmark sources: build only, never timed -----------------------
   # MTL5_BUILD_BENCHMARKS defaults OFF and no other job enables it, so
   # benchmarks/*.cpp is compiled by no runner. That is how bench_klu.cpp and
