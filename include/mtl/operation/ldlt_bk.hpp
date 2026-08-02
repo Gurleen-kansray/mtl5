@@ -37,10 +37,29 @@ struct bk_pivot_info {
     std::vector<int> ipiv;
 };
 
-/// Swap rows and columns r1 and r2 in the lower triangle of a symmetric matrix.
-/// Only the lower triangle (and diagonal) is accessed and modified.
+/// Swap rows and columns r1 and r2 in the lower triangle of a symmetric matrix,
+/// touching only columns >= first_col. Only the lower triangle (and diagonal)
+/// is accessed and modified.
+///
+/// `first_col` matters for Bunch-Kaufman. The factorization is a PRODUCT of
+/// per-step permutations and elementary transforms,
+///
+///     A = (P_0 L_0)(P_1 L_1)... D ...(P_1 L_1)^T (P_0 L_0)^T
+///
+/// not a single global permutation, and `ldlt_bk_solve` replays those
+/// permutations one step at a time (as LAPACK's dsytrs does). So the L columns
+/// already written by earlier steps must be left ALONE: they are recorded in the
+/// row ordering that was current when they were computed, and the solve reaches
+/// them before the later interchanges are replayed.
+///
+/// Permuting them here instead produces a factor in the "single global P"
+/// convention while the solve still reads the per-step one. The two disagree
+/// the moment any interchange happens, which silently returned wrong solutions
+/// with info == 0 (#335). Passing first_col = k keeps the swap inside the
+/// trailing submatrix, which is also what makes the stored factor match
+/// LAPACK's dsytrf byte for byte.
 template <Matrix M>
-void symmetric_swap(M& A, std::size_t r1, std::size_t r2) {
+void symmetric_swap(M& A, std::size_t r1, std::size_t r2, std::size_t first_col = 0) {
     if (r1 == r2) return;
     if (r1 > r2) std::swap(r1, r2);
     std::size_t n = A.num_rows();
@@ -50,8 +69,8 @@ void symmetric_swap(M& A, std::size_t r1, std::size_t r2) {
     A(r1, r1) = A(r2, r2);
     A(r2, r2) = tmp;
 
-    // Swap entries in rows r1 and r2 for columns < r1
-    for (std::size_t j = 0; j < r1; ++j) {
+    // Swap entries in rows r1 and r2 for columns in [first_col, r1)
+    for (std::size_t j = first_col; j < r1; ++j) {
         tmp = A(r1, j);
         A(r1, j) = A(r2, j);
         A(r2, j) = tmp;
@@ -146,13 +165,17 @@ int ldlt_bk_factor(M& A, bk_pivot_info& pivots) {
                 // Test 3: A(r,r) is a good pivot - swap r<->k, use 1x1
                 use_1x1 = true;
                 swap_r = r;
-                symmetric_swap(A, k, r);
+                // first_col = k: leave the L columns written by steps < k
+                // untouched; the solve replays this interchange at step k.
+                symmetric_swap(A, k, r, k);
             } else {
                 // Use 2x2 pivot from rows/cols {k, r}
                 // Swap r <-> k+1 to put the 2x2 block at positions {k, k+1}
                 use_2x2 = true;
                 if (r != k + 1)
-                    symmetric_swap(A, k + 1, r);
+                    // first_col = k: column k belongs to the 2x2 block being
+                    // formed and must be swapped; columns < k must not.
+                    symmetric_swap(A, k + 1, r, k);
             }
         }
 
