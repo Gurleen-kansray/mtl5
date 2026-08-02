@@ -87,8 +87,9 @@ Reproduce the headline analyses directly from these files:
 
 ```bash
 # Epic #82 gate: is native-fast within 20% of OpenBLAS for GEMM at N >= 256?
+# Asserts the MEDIAN ratio >= 80%, plus a 70% per-size floor (#327).
 ../analyze_gate.py blas_sweep_native-fast.csv blas_sweep_openblas.csv \
-    --gate --op gemm --threshold 0.80 --min-size 256
+    --gate --op gemm --threshold 0.80 --floor 0.70 --min-size 256
 
 # Percent of a reference backend and of FMA peak (~78 GFLOP/s, 1 P-core fp64)
 ../analyze_gate.py blas_sweep_*.csv --peak-gflops 78
