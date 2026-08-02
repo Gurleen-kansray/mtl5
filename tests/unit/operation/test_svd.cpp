@@ -5,6 +5,7 @@
 #include <mtl/vec/dense_vector.hpp>
 #include <mtl/operation/svd.hpp>
 #include <mtl/operation/spectral_properties.hpp>
+#include <mtl/operation/householder.hpp>
 #include <mtl/operation/operators.hpp>
 #include <mtl/operation/norms.hpp>
 #include <mtl/operation/trans.hpp>
@@ -314,4 +315,96 @@ TEST_CASE("SVD: rank-deficient input keeps U orthogonal (#337)",
     REQUIRE(S(0,0) > 1.0);
     for (std::size_t i = 1; i < n; ++i)
         REQUIRE_THAT(S(i,i), Catch::Matchers::WithinAbs(0.0, 1e-10));
+}
+
+// ---------------------------------------------------------------------------
+// Regression: review findings on the #337 fix itself.
+//
+// Both were real defects in the one-sided Jacobi implementation, and both were
+// missed by the sweeps above -- which is the point of pinning them here.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("SVD: extreme scaling does not overflow or underflow the rotations",
+          "[operation][svd][regression]") {
+    // The Jacobi inner products alpha/beta/gamma are formed from squares. Taken
+    // raw they overflow to inf near 1e200 and underflow to zero near 1e-200 --
+    // and a zero product silently skipped every rotation, so the columns were
+    // never orthogonalized at all.
+    const std::size_t n = 4;
+    const double base[4][4] = {{4,1,0,0},{1,3,1,0},{0,1,2,1},{0,0,1,1}};
+
+    for (double s : {1e-200, 1e-160, 1.0, 1e160, 1e200}) {
+        mtl::mat::dense2D<double> A(n, n);
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j < n; ++j) A(i,j) = base[i][j] * s;
+
+        mtl::mat::dense2D<double> U, S, V;
+        mtl::svd(A, U, S, V);
+        INFO("scale = " << s);
+
+        // Singular values scale linearly and stay finite.
+        for (std::size_t i = 0; i < n; ++i) {
+            REQUIRE(std::isfinite(S(i,i)));
+            REQUIRE(S(i,i) >= 0.0);
+        }
+        REQUIRE(S(0,0) > 0.0);
+
+        // U stays orthogonal -- the symptom when the rotations were skipped.
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j < n; ++j) {
+                double acc = 0.0;
+                for (std::size_t k = 0; k < n; ++k) acc += U(k,i) * U(k,j);
+                REQUIRE_THAT(acc, Catch::Matchers::WithinAbs(i == j ? 1.0 : 0.0, 1e-10));
+            }
+
+        // Reconstruction, measured relatively so it is scale independent.
+        double worst = 0.0, anorm = 0.0;
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j < n; ++j) {
+                double acc = 0.0;
+                for (std::size_t k = 0; k < n; ++k)
+                    for (std::size_t l = 0; l < n; ++l) acc += U(i,k) * S(k,l) * V(j,l);
+                worst = std::max(worst, std::abs(acc - A(i,j)));
+                anorm = std::max(anorm, std::abs(A(i,j)));
+            }
+        REQUIRE(worst <= 1e-12 * (anorm > 0.0 ? anorm : 1.0));
+    }
+}
+
+TEST_CASE("SVD: basis completion when no canonical vector is dominant",
+          "[operation][svd][regression]") {
+    // A = I - v*v^T with v = ones/sqrt(m) has rank m-1, and the single missing
+    // direction is spread evenly over the coordinates: every canonical vector
+    // has residual exactly 1/sqrt(m) against the computed columns. Any fixed
+    // acceptance bound above that rejects all of them and leaves a stale
+    // identity column in U. 1/sqrt(m) is 0.5 at m=4 and 0.25 at m=16.
+    for (std::size_t m : {4u, 9u, 16u}) {
+        mtl::mat::dense2D<double> A(m, m);
+        const double c = 1.0 / static_cast<double>(m);
+        for (std::size_t i = 0; i < m; ++i)
+            for (std::size_t j = 0; j < m; ++j)
+                A(i,j) = (i == j ? 1.0 : 0.0) - c;
+
+        mtl::mat::dense2D<double> U, S, V;
+        mtl::svd(A, U, S, V);
+        INFO("m = " << m << ", residual per candidate = " << 1.0 / std::sqrt((double)m));
+
+        for (std::size_t i = 0; i < m; ++i)
+            for (std::size_t j = 0; j < m; ++j) {
+                double acc = 0.0;
+                for (std::size_t k = 0; k < m; ++k) acc += U(k,i) * U(k,j);
+                REQUIRE_THAT(acc, Catch::Matchers::WithinAbs(i == j ? 1.0 : 0.0, 1e-10));
+            }
+
+        // Rank m-1: exactly one zero singular value.
+        REQUIRE_THAT(S(m-1, m-1), Catch::Matchers::WithinAbs(0.0, 1e-12));
+        REQUIRE(S(m-2, m-2) > 0.5);
+    }
+}
+
+TEST_CASE("Householder: empty input is well defined", "[operation][householder][regression]") {
+    mtl::vec::dense_vector<double> x(0);
+    auto [v, beta] = mtl::householder(x);
+    REQUIRE(v.size() == 0);
+    REQUIRE(beta == 0.0);
 }

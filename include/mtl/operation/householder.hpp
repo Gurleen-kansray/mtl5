@@ -23,6 +23,7 @@ std::pair<vec::dense_vector<T>, T> householder(const vec::dense_vector<T>& x) {
     const size_type n = x.size();
 
     vec::dense_vector<T> v(n);
+    if (n == 0) return {v, math::zero<T>()};   // no element at index 0 to write
 
     // Scale by the largest magnitude before squaring. Forming sum(x(i)^2)
     // directly underflows to zero once the entries are small -- and the old

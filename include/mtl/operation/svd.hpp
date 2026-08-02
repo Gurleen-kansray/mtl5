@@ -22,7 +22,18 @@ namespace mtl {
 
 /// SVD: decompose A (m x n) = U * S * V^T
 /// U is m x m orthogonal, S is m x n diagonal (stored as m x n matrix), V is n x n orthogonal.
-/// Uses iterative QR approach (Golub-Van Loan style).
+/// Singular values are non-negative and returned in descending order.
+///
+/// Uses one-sided Jacobi: the columns are orthogonalized by plane rotations,
+/// which are accumulated into V, and the singular values are the resulting
+/// column norms.
+///
+/// `tol` is the relative threshold for treating a column pair as already
+/// orthogonal, i.e. the accuracy the singular values are driven to. It
+/// defaults to the machine epsilon of the value type; the previous default of
+/// 1e-10 would cap accuracy several orders of magnitude short of what the
+/// method achieves. Callers wanting the old, looser behaviour can pass 1e-10
+/// explicitly, and a larger tolerance trades accuracy for fewer sweeps.
 template <Matrix M>
 void svd(const M& A,
          mat::dense2D<typename M::value_type>& U,
@@ -136,13 +147,29 @@ void svd(const M& A,
         bool rotated = false;
         for (size_type p = 0; p + 1 < n; ++p) {
             for (size_type q = p + 1; q < n; ++q) {
-                value_type alpha = math::zero<value_type>();   // ||B_p||^2
-                value_type gamma = math::zero<value_type>();   // B_p . B_q
-                value_type betac = math::zero<value_type>();   // ||B_q||^2
+                // Form the inner products in COMMON-SCALED variables. Taken
+                // raw, alpha and betac overflow to inf for entries around
+                // 1e200 and underflow to zero around 1e-200 -- which silently
+                // skipped every rotation, so the columns were never
+                // orthogonalized (measured: a matrix scaled by 1e-160 came
+                // back with |U^T U - I| = 0.87). One scale shared by both
+                // columns keeps zeta, and hence the rotation, unchanged.
+                value_type cs = math::zero<value_type>();
                 for (size_type i = 0; i < m; ++i) {
-                    alpha += B(i, p) * B(i, p);
-                    betac += B(i, q) * B(i, q);
-                    gamma += B(i, p) * B(i, q);
+                    const value_type ap = abs(B(i, p)), aq = abs(B(i, q));
+                    if (ap > cs) cs = ap;
+                    if (aq > cs) cs = aq;
+                }
+                if (cs == math::zero<value_type>()) continue;   // both columns zero
+
+                value_type alpha = math::zero<value_type>();   // ||B_p||^2, scaled
+                value_type gamma = math::zero<value_type>();   // B_p . B_q,  scaled
+                value_type betac = math::zero<value_type>();   // ||B_q||^2, scaled
+                for (size_type i = 0; i < m; ++i) {
+                    const value_type bp = B(i, p) / cs, bq = B(i, q) / cs;
+                    alpha += bp * bp;
+                    betac += bq * bq;
+                    gamma += bp * bq;
                 }
                 if (gamma == math::zero<value_type>()) continue;
                 const value_type scale = sqrt(alpha * betac);
@@ -180,9 +207,19 @@ void svd(const M& A,
     // Singular values are the column norms of B; U's columns are B normalized.
     std::vector<value_type> sigma(n);
     for (size_type j = 0; j < n; ++j) {
+        // Scaled norm, for the same overflow/underflow reason as above.
+        value_type cs = math::zero<value_type>();
+        for (size_type i = 0; i < m; ++i) {
+            const value_type a = abs(B(i, j));
+            if (a > cs) cs = a;
+        }
+        if (cs == math::zero<value_type>()) { sigma[j] = math::zero<value_type>(); continue; }
         value_type s2 = math::zero<value_type>();
-        for (size_type i = 0; i < m; ++i) s2 += B(i, j) * B(i, j);
-        sigma[j] = sqrt(s2);
+        for (size_type i = 0; i < m; ++i) {
+            const value_type b = B(i, j) / cs;
+            s2 += b * b;
+        }
+        sigma[j] = cs * sqrt(s2);
     }
 
     // Order descending, permuting V (and B, which becomes U) to match.
@@ -220,25 +257,66 @@ void svd(const M& A,
         for (size_type i = 0; i < m; ++i) U(i, filled) = Bs(i, j) / sigma_s[j];
         ++filled;
     }
-    // Complete the basis: orthogonalize canonical vectors against what is there
-    // (twice, for stability) and keep whichever survive.
-    for (size_type cand = 0; cand < m && filled < m; ++cand) {
-        vec::dense_vector<value_type> w(m);
+    // Complete the basis by PIVOTED Gram-Schmidt over the canonical vectors:
+    // at each step take the candidate with the largest remaining residual.
+    //
+    // A fixed acceptance bound does not work here. With d = m - filled
+    // directions still missing, the residuals of the m canonical vectors
+    // satisfy sum ||P_perp e_k||^2 = d, so the best of them is only guaranteed
+    // to reach sqrt(d/m) -- 0.25 for a single missing direction at m = 16.
+    // A `> 0.5` test therefore rejects EVERY candidate while the basis is
+    // still incomplete, leaving stale identity columns in U. Measured on
+    // A = I - v*v^T with v = ones/sqrt(m): |U^T U - I| was 0.87 at m = 4 and
+    // 0.97 at m = 16. Taking the maximum each step always makes progress,
+    // because that maximum is at least sqrt(d/m) > 0 whenever d > 0.
+    if (filled < m) {
+        // C holds the canonical vectors, kept orthogonal to the accepted
+        // columns so each step costs O(m^2) rather than a full re-projection.
+        mat::dense2D<value_type> C(m, m);
         for (size_type i = 0; i < m; ++i)
-            w(i) = (i == cand) ? math::one<value_type>() : math::zero<value_type>();
-        for (int pass = 0; pass < 2; ++pass) {
-            for (size_type j = 0; j < filled; ++j) {
+            for (size_type j = 0; j < m; ++j)
+                C(i, j) = (i == j) ? math::one<value_type>() : math::zero<value_type>();
+
+        for (size_type j = 0; j < filled; ++j)
+            for (int pass = 0; pass < 2; ++pass)
+                for (size_type k = 0; k < m; ++k) {
+                    value_type d = math::zero<value_type>();
+                    for (size_type i = 0; i < m; ++i) d += U(i, j) * C(i, k);
+                    for (size_type i = 0; i < m; ++i) C(i, k) -= d * U(i, j);
+                }
+
+        while (filled < m) {
+            size_type best = 0;
+            value_type best_n2 = -math::one<value_type>();
+            for (size_type k = 0; k < m; ++k) {
+                value_type n2 = math::zero<value_type>();
+                for (size_type i = 0; i < m; ++i) n2 += C(i, k) * C(i, k);
+                if (n2 > best_n2) { best_n2 = n2; best = k; }
+            }
+            if (!(best_n2 > math::zero<value_type>())) break;   // numerically exhausted
+
+            const value_type wn = sqrt(best_n2);
+            for (size_type i = 0; i < m; ++i) U(i, filled) = C(i, best) / wn;
+            // Re-orthogonalize the accepted column against the earlier ones.
+            for (int pass = 0; pass < 2; ++pass)
+                for (size_type j = 0; j < filled; ++j) {
+                    value_type d = math::zero<value_type>();
+                    for (size_type i = 0; i < m; ++i) d += U(i, j) * U(i, filled);
+                    for (size_type i = 0; i < m; ++i) U(i, filled) -= d * U(i, j);
+                }
+            value_type rn = math::zero<value_type>();
+            for (size_type i = 0; i < m; ++i) rn += U(i, filled) * U(i, filled);
+            rn = sqrt(rn);
+            if (!(rn > math::zero<value_type>())) break;
+            for (size_type i = 0; i < m; ++i) U(i, filled) /= rn;
+            ++filled;
+
+            for (size_type k = 0; k < m; ++k) {
                 value_type d = math::zero<value_type>();
-                for (size_type i = 0; i < m; ++i) d += U(i, j) * w(i);
-                for (size_type i = 0; i < m; ++i) w(i) -= d * U(i, j);
+                for (size_type i = 0; i < m; ++i) d += U(i, filled - 1) * C(i, k);
+                for (size_type i = 0; i < m; ++i) C(i, k) -= d * U(i, filled - 1);
             }
         }
-        value_type wn = math::zero<value_type>();
-        for (size_type i = 0; i < m; ++i) wn += w(i) * w(i);
-        wn = sqrt(wn);
-        if (wn <= value_type(0.5)) continue;   // dependent on what is already there
-        for (size_type i = 0; i < m; ++i) U(i, filled) = w(i) / wn;
-        ++filled;
     }
 }
 
