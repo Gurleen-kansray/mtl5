@@ -114,14 +114,14 @@ The scaling and scoreboard files come from the other drivers:
 
 ```bash
 BENCH_PCPUS=0,2,4,6,8,10,12,14 ../run_scaling.sh            # gemm_scaling_*.csv (#108)
-BENCH_PCPUS=0,2,4,6,8,10,12,14 SPARSE_SIZES=100,160 \
-    ../run_scaling_297.sh                                   # scaling_*.csv (#297)
+BENCH_PCPUS=0,2,4,6,8,10,12,14 ../run_scaling_297.sh         # scaling_*.csv (#297)
 ../../build-klu/benchmarks/bench_klu         --csv klu_scoreboard.csv     klu/*/*.mtx
 ../../build-superlu/benchmarks/bench_superlu --csv superlu_scoreboard.csv superlu/*/*.mtx
 ```
 
-`SPARSE_SIZES` is set explicitly because the driver default (`200,320`) does not
-complete on this machine — see #321.
+`scaling_sparse.csv` was measured at grid sides `100,160`, which is now the
+driver default (#321 — the previous `200,320` did not complete on this machine).
+No override is needed to reproduce it.
 
 ## Plots
 
