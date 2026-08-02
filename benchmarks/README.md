@@ -342,9 +342,32 @@ benchmarks/analyze_scaling.py benchmarks/data/scaling_ewise.csv --op ewise-vec
 ```
 
 Environment: `BENCH_PCPUS`, `THREADS`, `LAPACK_SIZES` (default
-`1024,2048,4096`), `SPARSE_SIZES` (2-D grid sides, default `200,320`), `BUILD`
+`1024,2048,4096`), `SPARSE_SIZES` (2-D grid sides, default `100,160`), `BUILD`
 (default `build-scaling-297`), `JOBS`. `analyze_scaling.py` keys its series on
 `(operation, size)`, so families that share a size no longer collide.
+
+#### Sparse sizes grow expensive fast
+
+The sparse family's cost is dominated by the **untimed factorization** each case
+performs before its (millisecond) solves are measured, and it scales far worse
+than the grid side suggests. Whole-suite wall clock at `T=1` on an i7-12700K:
+
+| grid side | 2-D case | wall clock |
+|---|---|---|
+| 100 | n=10,000 | 11 s |
+| 160 | n=25,600 | 3 m 38 s |
+| 200 | n=40,000 | 8 m 46 s |
+| 320 | n=102,400 | not measured |
+
+That is **per thread count** — the factorization is serial, so every value in
+`THREADS` pays it again. The default is therefore ~15 minutes for
+`THREADS="1 2 4 8"`, in proportion with the rest of the driver.
+
+The default was `200,320` until #321; a `T=1` run was killed after **3 h 28 min**
+without finishing its first size. #322 clamped the 3-D grid, which is what
+brought side 200 down to the 8 m 46 s above, but `200,320` remains impractical
+for a four-thread-count sweep. Raise `SPARSE_SIZES` deliberately, with the table
+above in mind.
 
 Results are written up in `docs/design/issue-297-threading-results.md`; the plan
 is `docs/design/issue-297-threading-benchmark-plan.md`.

@@ -17,7 +17,8 @@
 #                (see: lscpu -e=CPU,CORE,MAXMHZ).
 #   THREADS      thread counts to sweep (default "1 2 4 8").
 #   LAPACK_SIZES dense factor sizes (default 1024,2048,4096).
-#   SPARSE_SIZES sparse 2-D grid sides (default 200,320).
+#   SPARSE_SIZES sparse 2-D grid sides (default 100,160 -- see the cost note
+#                below before raising it).
 #   BUILD        build dir (default build-scaling-297).
 #   JOBS         build parallelism (default 4).
 #
@@ -31,7 +32,25 @@ cd "$ROOT"
 PCPUS="${BENCH_PCPUS:-0,2,4,6,8,10,12,14}"
 THREADS="${THREADS:-1 2 4 8}"
 LAPACK_SIZES="${LAPACK_SIZES:-1024,2048,4096}"
-SPARSE_SIZES="${SPARSE_SIZES:-200,320}"
+# Sparse grid sides. The cost is dominated by the UNTIMED factorization each
+# case performs before the (millisecond) solves are measured, and it grows
+# steeply. Measured whole-suite wall clock at T=1 on an i7-12700K, with the
+# 3-D grid clamped (#322):
+#
+#     side 100    11 s
+#     side 160     3 m 38 s
+#     side 200     8 m 46 s
+#     side 320    not measured; its 2-D case alone is n=102,400
+#
+# That is per thread count, and the factorization is serial, so every value in
+# THREADS pays it again: this default is ~230 s x 4 = ~15 min, in proportion
+# with the rest of this driver.
+#
+# The previous default of 200,320 did not complete: a T=1 run was killed after
+# 3 h 28 min without finishing its first size (#321). #322 clamped the 3-D grid,
+# which is what brought side 200 down to the 8 m 46 s above, but 200,320 is
+# still far too slow for a four-thread-count sweep. Raise this deliberately.
+SPARSE_SIZES="${SPARSE_SIZES:-100,160}"
 BUILD="${BUILD:-build-scaling-297}"
 DATA="benchmarks/data"
 mkdir -p "$DATA"
