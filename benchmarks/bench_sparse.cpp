@@ -220,9 +220,28 @@ static void run_suite(mtl::bench::reporter& rep, const std::string& label,
         bench_case(rep, "snlu "   + t2, label, L2, snlu,   lu_flops);
 
         // 3-D Laplacian (wider levels than 2-D): more parallelism per level.
-        // g3 chosen so n3 ~ n2 (comparable problem size) but bounded.
-        const std::size_t g3 = std::max<std::size_t>(8, static_cast<std::size_t>(std::cbrt(
-                                   static_cast<double>(g) * static_cast<double>(g))));
+        // g3 tracks n3 ~ n2 (comparable DOF count) but is clamped at both ends.
+        //
+        // The upper clamp matters: equal DOF is NOT equal cost. A 3-D Laplacian
+        // has far worse fill and flop growth under Cholesky than a 2-D one of
+        // the same n, and the factorization here is untimed SETUP that every
+        // run pays before measuring the (millisecond) solves. Measured whole-
+        // suite wall clock at T=1 on an i7-12700K:
+        //
+        //     side 100 -> lap3d21 (n=9,261)    11 s
+        //     side 160 -> lap3d29 (n=24,389)   3 m 38 s
+        //     side 200 -> lap3d34 (n=39,304)   killed after 3 h 28 m
+        //
+        // Without a cap, raising the 2-D size implicitly selects an intractable
+        // 3-D problem. kMaxLap3dSide is set so the documented default sizes
+        // (100,160 -> g3 21,29) are unaffected, while larger 2-D grids hold the
+        // 3-D case at a bounded cost. The case label carries g3 ("lap3d32"), so
+        // a clamped run is self-describing in the console output and the CSV.
+        constexpr std::size_t kMaxLap3dSide = 32;   // n3 <= 32,768
+        const std::size_t g3 = std::clamp<std::size_t>(
+            static_cast<std::size_t>(std::cbrt(
+                static_cast<double>(g) * static_cast<double>(g))),
+            8, kMaxLap3dSide);
         auto L3 = laplacian_3d(g3);
         const std::string t3 = "lap3d" + std::to_string(g3);
         bench_case(rep, "chol "   + t3, label, L3, chol,   chol_flops);
