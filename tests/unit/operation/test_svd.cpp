@@ -4,6 +4,7 @@
 #include <mtl/mat/dense2D.hpp>
 #include <mtl/vec/dense_vector.hpp>
 #include <mtl/operation/svd.hpp>
+#include <mtl/operation/spectral_properties.hpp>
 #include <mtl/operation/operators.hpp>
 #include <mtl/operation/norms.hpp>
 #include <mtl/operation/trans.hpp>
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 using namespace mtl;
@@ -192,4 +194,124 @@ TEST_CASE("SVD orthogonality on Moler matrix", "[operation][svd][generator]") {
         sv_sum_sq += S(i, i) * S(i, i);
     double fnorm = frobenius_norm(A);
     REQUIRE_THAT(sv_sum_sq, Catch::Matchers::WithinAbs(fnorm * fnorm, 0.5));
+}
+
+// ---------------------------------------------------------------------------
+// Regression: #337 -- NaN or badly wrong singular values on ordinary input.
+//
+// The alternating-QR iteration converged to ~1e-10 and then corrupted its own
+// answer, while its convergence test (off-diagonal mass / diagonal mass) kept
+// shrinking and so read as converged. Degenerate Householder reflectors turned
+// ~30% of symmetric inputs into all-NaN. Replaced by one-sided Jacobi.
+//
+// The existing cases above use small or specially structured matrices and all
+// passed throughout, so the sweeps below deliberately use ordinary random
+// input at the sizes that failed.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("SVD: no NaN and sigma_max == spectral radius on symmetric input (#337)",
+          "[operation][svd][regression]") {
+    // For a symmetric matrix sigma_max is the spectral radius by definition,
+    // which checks the values without needing a reference implementation.
+    std::uint64_t seed = 20260802u;
+    auto next = [&seed]() {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<double>((seed >> 11) % 2000001) / 1000000.0 - 1.0;
+    };
+
+    for (std::size_t n = 3; n <= 20; ++n) {
+        mtl::mat::dense2D<double> A(n, n);
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = i; j < n; ++j) { double v = next(); A(i,j) = v; A(j,i) = v; }
+
+        const auto sv = mtl::detail::singular_values(A);
+        REQUIRE(sv.size() == n);
+
+        double smax = 0.0;
+        for (double s : sv) {
+            INFO("n = " << n);
+            REQUIRE(std::isfinite(s));          // the all-NaN failure mode
+            REQUIRE(s >= -1e-12);
+            if (s > smax) smax = s;
+        }
+
+        const double sr = mtl::spectral_radius(A);
+        INFO("n = " << n << ", sigma_max = " << smax << ", spectral radius = " << sr);
+        REQUIRE(std::abs(smax - sr) <= 1e-9 * (sr > 0.0 ? sr : 1.0));
+    }
+}
+
+TEST_CASE("SVD: reconstruction and orthogonality on random shapes (#337)",
+          "[operation][svd][regression]") {
+    std::uint64_t seed = 987654321u;
+    auto next = [&seed]() {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<double>((seed >> 11) % 2000001) / 1000000.0 - 1.0;
+    };
+
+    const std::size_t shapes[][2] = {{4,4}, {8,8}, {12,12}, {7,3}, {3,7}, {10,6}, {6,10}};
+
+    for (const auto& sh : shapes) {
+        const std::size_t m = sh[0], n = sh[1];
+        mtl::mat::dense2D<double> A(m, n);
+        for (std::size_t i = 0; i < m; ++i)
+            for (std::size_t j = 0; j < n; ++j) A(i,j) = next();
+
+        mtl::mat::dense2D<double> U, S, V;
+        mtl::svd(A, U, S, V);
+
+        INFO("shape " << m << "x" << n);
+
+        // A == U * S * V^T
+        for (std::size_t i = 0; i < m; ++i)
+            for (std::size_t j = 0; j < n; ++j) {
+                double acc = 0.0;
+                for (std::size_t k = 0; k < m; ++k)
+                    for (std::size_t l = 0; l < n; ++l) acc += U(i,k) * S(k,l) * V(j,l);
+                REQUIRE_THAT(acc, Catch::Matchers::WithinAbs(A(i,j), 1e-10));
+            }
+
+        // U and V orthogonal, including the completion columns when m > rank
+        for (std::size_t i = 0; i < m; ++i)
+            for (std::size_t j = 0; j < m; ++j) {
+                double acc = 0.0;
+                for (std::size_t k = 0; k < m; ++k) acc += U(k,i) * U(k,j);
+                REQUIRE_THAT(acc, Catch::Matchers::WithinAbs(i == j ? 1.0 : 0.0, 1e-10));
+            }
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j < n; ++j) {
+                double acc = 0.0;
+                for (std::size_t k = 0; k < n; ++k) acc += V(k,i) * V(k,j);
+                REQUIRE_THAT(acc, Catch::Matchers::WithinAbs(i == j ? 1.0 : 0.0, 1e-10));
+            }
+
+        // Singular values non-negative and descending
+        const std::size_t mn = std::min(m, n);
+        for (std::size_t i = 0; i + 1 < mn; ++i) REQUIRE(S(i,i) >= S(i+1,i+1));
+        for (std::size_t i = 0; i < mn; ++i)     REQUIRE(S(i,i) >= 0.0);
+    }
+}
+
+TEST_CASE("SVD: rank-deficient input keeps U orthogonal (#337)",
+          "[operation][svd][regression]") {
+    // Every column a multiple of the first: rank 1, so U's remaining columns
+    // come from the orthonormal completion rather than from the data.
+    const std::size_t n = 6;
+    mtl::mat::dense2D<double> A(n, n);
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = 0; j < n; ++j)
+            A(i,j) = static_cast<double>((i + 1) * (j + 1));
+
+    mtl::mat::dense2D<double> U, S, V;
+    mtl::svd(A, U, S, V);
+
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = 0; j < n; ++j) {
+            double acc = 0.0;
+            for (std::size_t k = 0; k < n; ++k) acc += U(k,i) * U(k,j);
+            REQUIRE_THAT(acc, Catch::Matchers::WithinAbs(i == j ? 1.0 : 0.0, 1e-10));
+        }
+    REQUIRE(S(0,0) > 1.0);
+    for (std::size_t i = 1; i < n; ++i)
+        REQUIRE_THAT(S(i,i), Catch::Matchers::WithinAbs(0.0, 1e-10));
 }

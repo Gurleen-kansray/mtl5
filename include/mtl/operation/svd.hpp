@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <vector>
+#include <limits>
 #include <mtl/concepts/matrix.hpp>
 #include <mtl/vec/dense_vector.hpp>
 #include <mtl/mat/dense2D.hpp>
@@ -27,7 +28,8 @@ void svd(const M& A,
          mat::dense2D<typename M::value_type>& U,
          mat::dense2D<typename M::value_type>& S,
          mat::dense2D<typename M::value_type>& V,
-         typename M::value_type tol = 1e-10) {
+         typename M::value_type tol =
+             std::numeric_limits<typename M::value_type>::epsilon()) {
     using value_type = typename M::value_type;
     using size_type  = typename M::size_type;
     using std::abs;
@@ -89,9 +91,6 @@ void svd(const M& A,
     }
 #endif
 
-    const size_type max_iter = 100 * std::max(m, n);
-
-    // Initialize: U = I(m), V = I(n), W = A
     U.change_dim(m, m);
     V.change_dim(n, n);
     S.change_dim(m, n);
@@ -104,87 +103,149 @@ void svd(const M& A,
         for (size_type j = 0; j < n; ++j)
             V(i, j) = (i == j) ? math::one<value_type>() : math::zero<value_type>();
 
-    // Working matrix W starts as A
-    mat::dense2D<value_type> W(m, n);
+    if (mn == 0) return;
+
+    mat::dense2D<value_type> B;
+
+    // ---- One-sided Jacobi -------------------------------------------------
+    //
+    // Replaces an alternating-QR iteration that was both inaccurate and
+    // self-destructive (#337). That scheme converged linearly to ~1e-10 and
+    // then CORRUPTED its own answer: on a 10x10 SPD case the worst singular
+    // value went 8.4e-09 wrong at iteration 100 to 136% wrong by iteration
+    // 1000, while its convergence test -- off-diagonal mass over diagonal mass
+    // -- kept shrinking to 1e-27 and so read as perfectly converged. Because
+    // max_iter was 100*max(m,n), the shipped result was the corrupted one, and
+    // for ~30% of inputs the degenerate reflectors turned it into all-NaN.
+    //
+    // One-sided Jacobi orthogonalizes the COLUMNS of A by plane rotations:
+    // A*V = U*S, so the rotations are accumulated into V and the singular
+    // values fall out as the column norms at the end. It converges
+    // quadratically, needs no deflation or shifts, and has no degenerate case
+    // to guard -- a pair that is already orthogonal is simply skipped.
+    B.change_dim(m, n);
     for (size_type i = 0; i < m; ++i)
         for (size_type j = 0; j < n; ++j)
-            W(i, j) = A(i, j);
+            B(i, j) = A(i, j);
 
-    // Iterative QR sweeps: alternating QR on W and W^T
-    for (size_type iter = 0; iter < max_iter; ++iter) {
-        // QR decompose W = Q1 * R1
-        mat::dense2D<value_type> W1(m, n);
-        for (size_type i = 0; i < m; ++i)
-            for (size_type j = 0; j < n; ++j)
-                W1(i, j) = W(i, j);
+    const value_type eps = std::numeric_limits<value_type>::epsilon();
+    const value_type thresh = (tol > math::zero<value_type>()) ? tol : eps;
+    const size_type max_sweeps = 60;
 
-        vec::dense_vector<value_type> tau1;
-        qr_factor(W1, tau1);
-        auto Q1 = qr_extract_Q(W1, tau1);
-        auto R1 = qr_extract_R(W1);
+    for (size_type sweep = 0; sweep < max_sweeps; ++sweep) {
+        bool rotated = false;
+        for (size_type p = 0; p + 1 < n; ++p) {
+            for (size_type q = p + 1; q < n; ++q) {
+                value_type alpha = math::zero<value_type>();   // ||B_p||^2
+                value_type gamma = math::zero<value_type>();   // B_p . B_q
+                value_type betac = math::zero<value_type>();   // ||B_q||^2
+                for (size_type i = 0; i < m; ++i) {
+                    alpha += B(i, p) * B(i, p);
+                    betac += B(i, q) * B(i, q);
+                    gamma += B(i, p) * B(i, q);
+                }
+                if (gamma == math::zero<value_type>()) continue;
+                const value_type scale = sqrt(alpha * betac);
+                // Already orthogonal to working precision: nothing to do. This
+                // is the whole degenerate-case handling -- no reflector to
+                // build, so nothing can underflow or divide by zero.
+                if (scale == math::zero<value_type>() || abs(gamma) <= thresh * scale)
+                    continue;
 
-        // U = U * Q1
-        auto Unew = U * Q1;
-        for (size_type i = 0; i < m; ++i)
-            for (size_type j = 0; j < m; ++j)
-                U(i, j) = Unew(i, j);
+                // Rotation zeroing B_p . B_q. Root of smaller magnitude of
+                // t^2 + 2*zeta*t - 1 = 0, chosen in the numerically stable form.
+                const value_type zeta = (betac - alpha) / (value_type(2) * gamma);
+                const value_type sgn  = (zeta >= math::zero<value_type>())
+                                      ? math::one<value_type>() : -math::one<value_type>();
+                const value_type t    = sgn / (abs(zeta) + sqrt(math::one<value_type>() + zeta * zeta));
+                const value_type c    = math::one<value_type>() / sqrt(math::one<value_type>() + t * t);
+                const value_type sn   = c * t;
 
-        // Transpose R1 for next QR
-        mat::dense2D<value_type> R1t(n, m);
-        for (size_type i = 0; i < m; ++i)
-            for (size_type j = 0; j < n; ++j)
-                R1t(j, i) = R1(i, j);
-
-        // QR decompose R1^T = Q2 * R2
-        vec::dense_vector<value_type> tau2;
-        qr_factor(R1t, tau2);
-        auto Q2 = qr_extract_Q(R1t, tau2);
-        auto R2 = qr_extract_R(R1t);
-
-        // V = V * Q2
-        auto Vnew = V * Q2;
-        for (size_type i = 0; i < n; ++i)
-            for (size_type j = 0; j < n; ++j)
-                V(i, j) = Vnew(i, j);
-
-        // W = R2^T for next iteration
-        for (size_type i = 0; i < m; ++i)
-            for (size_type j = 0; j < n; ++j)
-                W(i, j) = R2(j, i);
-
-        // Check convergence: off-diagonal elements of R2 should be small
-        value_type off_norm = math::zero<value_type>();
-        value_type diag_norm = math::zero<value_type>();
-        for (size_type i = 0; i < std::min(n, m); ++i) {
-            diag_norm += abs(R2(i, i));
-            for (size_type j = i + 1; j < m; ++j)
-                off_norm += abs(R2(i, j));
+                for (size_type i = 0; i < m; ++i) {
+                    const value_type bp = B(i, p), bq = B(i, q);
+                    B(i, p) = c * bp - sn * bq;
+                    B(i, q) = sn * bp + c * bq;
+                }
+                for (size_type i = 0; i < n; ++i) {
+                    const value_type vp = V(i, p), vq = V(i, q);
+                    V(i, p) = c * vp - sn * vq;
+                    V(i, q) = sn * vp + c * vq;
+                }
+                rotated = true;
+            }
         }
-        if (diag_norm > math::zero<value_type>() && off_norm / diag_norm < tol)
-            break;
+        if (!rotated) break;   // all pairs orthogonal: converged
     }
 
-    // Extract singular values from W (should be approximately diagonal)
+    // Singular values are the column norms of B; U's columns are B normalized.
+    std::vector<value_type> sigma(n);
+    for (size_type j = 0; j < n; ++j) {
+        value_type s2 = math::zero<value_type>();
+        for (size_type i = 0; i < m; ++i) s2 += B(i, j) * B(i, j);
+        sigma[j] = sqrt(s2);
+    }
+
+    // Order descending, permuting V (and B, which becomes U) to match.
+    std::vector<size_type> order(n);
+    for (size_type j = 0; j < n; ++j) order[j] = j;
+    std::sort(order.begin(), order.end(),
+              [&sigma](size_type a, size_type b) { return sigma[a] > sigma[b]; });
+
+    mat::dense2D<value_type> Bs(m, n), Vs(n, n);
+    std::vector<value_type> sigma_s(n);
+    for (size_type j = 0; j < n; ++j) {
+        const size_type src = order[j];
+        sigma_s[j] = sigma[src];
+        for (size_type i = 0; i < m; ++i) Bs(i, j) = B(i, src);
+        for (size_type i = 0; i < n; ++i) Vs(i, j) = V(i, src);
+    }
+    for (size_type i = 0; i < n; ++i)
+        for (size_type j = 0; j < n; ++j)
+            V(i, j) = Vs(i, j);
+
     for (size_type i = 0; i < m; ++i)
         for (size_type j = 0; j < n; ++j)
             S(i, j) = math::zero<value_type>();
+    for (size_type j = 0; j < mn; ++j)
+        S(j, j) = sigma_s[j];
 
-    for (size_type i = 0; i < mn; ++i) {
-        value_type sv = W(i, i);
-        if (sv < math::zero<value_type>()) {
-            // Flip sign: negate corresponding column of U
-            S(i, i) = -sv;
-            for (size_type k = 0; k < m; ++k)
-                U(k, i) = -U(k, i);
-        } else {
-            S(i, i) = sv;
+    // U: normalized columns of B where the singular value is nonzero. The
+    // remaining columns (rank deficiency, or m > n) are filled with an
+    // orthonormal completion so U stays a genuine m x m orthogonal matrix.
+    const value_type utol = (sigma_s.empty() ? math::zero<value_type>() : sigma_s[0])
+                          * eps * value_type(m > n ? m : n);
+    size_type filled = 0;
+    for (size_type j = 0; j < n && filled < m; ++j) {
+        if (sigma_s[j] <= utol) continue;
+        for (size_type i = 0; i < m; ++i) U(i, filled) = Bs(i, j) / sigma_s[j];
+        ++filled;
+    }
+    // Complete the basis: orthogonalize canonical vectors against what is there
+    // (twice, for stability) and keep whichever survive.
+    for (size_type cand = 0; cand < m && filled < m; ++cand) {
+        vec::dense_vector<value_type> w(m);
+        for (size_type i = 0; i < m; ++i)
+            w(i) = (i == cand) ? math::one<value_type>() : math::zero<value_type>();
+        for (int pass = 0; pass < 2; ++pass) {
+            for (size_type j = 0; j < filled; ++j) {
+                value_type d = math::zero<value_type>();
+                for (size_type i = 0; i < m; ++i) d += U(i, j) * w(i);
+                for (size_type i = 0; i < m; ++i) w(i) -= d * U(i, j);
+            }
         }
+        value_type wn = math::zero<value_type>();
+        for (size_type i = 0; i < m; ++i) wn += w(i) * w(i);
+        wn = sqrt(wn);
+        if (wn <= value_type(0.5)) continue;   // dependent on what is already there
+        for (size_type i = 0; i < m; ++i) U(i, filled) = w(i) / wn;
+        ++filled;
     }
 }
 
 /// Convenience overload returning a tuple of (U, S, V).
 template <Matrix M>
-auto svd(const M& A, typename M::value_type tol = 1e-10) {
+auto svd(const M& A,
+         typename M::value_type tol = std::numeric_limits<typename M::value_type>::epsilon()) {
     using value_type = typename M::value_type;
     mat::dense2D<value_type> U, S, V;
     svd(A, U, S, V, tol);
