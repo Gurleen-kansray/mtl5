@@ -150,6 +150,41 @@ rather than falling further behind.
 by 1.5× in absolute throughput (289 vs 437 GFLOP/s) — the AMD penalty compounds
 with thread count. OpenBLAS is the clear multi-core leader on this part.
 
+## Threaded kernel families (#297)
+
+Native-fast build, `MTL5_NUM_THREADS` ∈ {1,2,4,8}, pinned to physical cores.
+Dense factorizations swept at N = 1024, 2048; the sparse family at 2-D grid
+sides 100, 160. (The i7 page also ran N = 4096, dropped here — the generic
+native factorizations are ~3× slower under MSVC, so a 4096 T=1 baseline is
+impractical.) Best and worst T=1→T=8 speedup per family:
+
+![Kernel family scaling](img/benchmarks/ryzen/kernel-scaling-297.png)
+
+| Family | Cases | Best | Worst |
+|---|---:|---|---|
+| `lu` | 2 | 3.85× (N=1024) | 3.23× (N=2048) |
+| `qr` | 2 | **5.26×** (N=2048) | 3.59× (N=1024) |
+| `chol` | 2 | **7.86×** (N=2048) | 2.71× (N=1024) |
+| `gemm_rect` | 5 | 5.81× (2048×2048×1024) | 2.30× (64×4096×1024) |
+| `ewise` | 7 | 4.08× (1024×1024) | 0.80× (vec N=100000) |
+| `sparse` | 17 | 1.15× (snlu, lap2d side 100) | 0.75× (snlu, lap2d side 100) |
+
+**Cholesky scales best at N = 2048** (7.86×, even higher than the i7's 6.24×) but
+collapses to 2.71× at N = 1024 — too little work per core to amortize the
+parallel decomposition, the same cliff the i7 shows. `qr` follows the same shape
+(best at 2048). `lu` is the weak one here: 3.2–3.9× where the i7 reached 5.7–7.3×,
+and unusually its 1024 case edges out its 2048 case.
+
+**The flat cases are structural, not defects** — `gemm_rect` at 64×4096×1024 and
+`ewise` on a long vector are single-axis shapes with no parallelism on the
+partitioned dimension (`ewise` even goes *negative* at 0.80×, memory-bound), the
+same row-parallel gap the i7 records.
+
+**Sparse triangular solves do not scale in any structure** — best 1.15×, worst
+0.75×, both on 2-D Laplacians. This reproduces the i7 finding (and the original
+#297 result) almost exactly: level scheduling only parallelizes wide levels, and
+these systems don't have them.
+
 ## Sparse direct solvers
 
 Single-threaded, pinned to physical core 0, SuiteSparse matrices. SuperLU's
@@ -195,10 +230,6 @@ widens from 18× to 23.8×. The extra fill is identical to the i7 — the additi
 gap is the slower MSVC native kernel, consistent with every other native result
 on this page.
 
-The #297 threaded kernel-family sweep is not reproduced here; see the
-[i7-12700K results](i7-12700k.md#threaded-kernel-families-297) for that
-characterization.
-
 ## Caveats
 
 - **This is MSVC, not GCC.** Every difference from the i7 page that involves the
@@ -239,6 +270,15 @@ regenerated with:
 benchmarks/plot_results.py   benchmarks/data/ryzen-9-8945hs/blas_sweep_*.csv   --out docs/img/benchmarks/ryzen/blas-sweep-gflops.png
 benchmarks/plot_results.py   benchmarks/data/ryzen-9-8945hs/lapack_sweep_*.csv --out docs/img/benchmarks/ryzen/lapack-sweep-gflops.png
 benchmarks/analyze_scaling.py benchmarks/data/ryzen-9-8945hs/gemm_scaling_*.csv --plot docs/img/benchmarks/ryzen/gemm-scaling.png
+```
+
+The #297 threaded kernel-family sweep (native-fast, one CSV per family):
+
+```powershell
+benchmarks\run_scaling_297.ps1 -Threads 1,2,4,8 -LapackSizes 1024,2048 -SparseSizes 100,160 -OutDir benchmarks\data\ryzen-9-8945hs
+```
+```bash
+benchmarks/analyze_scaling.py benchmarks/data/ryzen-9-8945hs/scaling_*.csv --plot docs/img/benchmarks/ryzen/kernel-scaling-297.png
 ```
 
 The sparse scoreboards use `bench_klu` / `bench_superlu` (built with the vcpkg
