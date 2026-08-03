@@ -32,19 +32,19 @@ a fixed resolution.
 A 24×24-grid 5-point Laplacian (576 unknowns) has the classic banded pattern —
 the main diagonal plus the four stencil neighbours:
 
-![spy of a 2D Laplacian](img/spy-laplacian.png)
+![spy of a 2D Laplacian](../img/spy-laplacian.png)
 
 Coloring the same matrix by **non-zero density** (down-sampled to 64×64) shows
 where the bands concentrate:
 
-![density spy of the Laplacian](img/spy-laplacian-density.png)
+![density spy of the Laplacian](../img/spy-laplacian-density.png)
 
 Now factor it with dense LU and spy the factor. The band **fills in** — the
 2,784 structural non-zeros of the original become 27,118 in `L\U`, exactly the
 fill-in that fill-reducing orderings (RCM/AMD/COLAMD in `mtl::sparse::ordering`)
 exist to reduce:
 
-![spy of the LU factor showing fill-in](img/spy-laplacian-lu.png)
+![spy of the LU factor showing fill-in](../img/spy-laplacian-lu.png)
 
 ## Uses
 

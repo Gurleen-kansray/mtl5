@@ -41,7 +41,7 @@ MKL comes from the `mkl-devel` wheel). These are not portable performance claims
 Sweep `65:1025:80` — deliberately odd, non-power-of-2 sizes — pinned to physical
 core 0 (affinity mask `0x1`), every vendor's threading forced to 1.
 
-![BLAS L1/L2/L3 GFLOP/s vs N](img/benchmarks/ryzen/blas-sweep-gflops.png)
+![BLAS L1/L2/L3 GFLOP/s vs N](../img/benchmarks/amd-ryzen-9-8945hs/blas-sweep-gflops.png)
 
 ### GEMM, GFLOP/s
 
@@ -107,7 +107,7 @@ Same sweep and pinning. All three backends here have a LAPACK path — the offic
 OpenBLAS Windows binary bundles LAPACK, so unlike BLIS on the i7 page, OpenBLAS
 appears in this table.
 
-![LAPACK factorization GFLOP/s vs N](img/benchmarks/ryzen/lapack-sweep-gflops.png)
+![LAPACK factorization GFLOP/s vs N](../img/benchmarks/amd-ryzen-9-8945hs/lapack-sweep-gflops.png)
 
 GFLOP/s at N = 1025:
 
@@ -132,7 +132,7 @@ GEMM at N = 2048, threads pinned to the first T physical cores (SMT siblings
 excluded, affinity masks `0x1`, `0x5`, `0x55`, `0x5555`), one process per thread
 count.
 
-![GEMM multi-core scaling](img/benchmarks/ryzen/gemm-scaling.png)
+![GEMM multi-core scaling](../img/benchmarks/amd-ryzen-9-8945hs/gemm-scaling.png)
 
 | T | native-fast | openblas | mkl |
 |---:|---|---|---|
@@ -158,7 +158,7 @@ sides 100, 160. (The i7 page also ran N = 4096, dropped here — the generic
 native factorizations are ~3× slower under MSVC, so a 4096 T=1 baseline is
 impractical.) Best and worst T=1→T=8 speedup per family:
 
-![Kernel family scaling](img/benchmarks/ryzen/kernel-scaling-297.png)
+![Kernel family scaling](../img/benchmarks/amd-ryzen-9-8945hs/kernel-scaling-297.png)
 
 | Family | Cases | Best | Worst |
 |---|---:|---|---|
@@ -267,9 +267,9 @@ machine identity (self-reported by `mtl::util::identify()`). Figures are
 regenerated with:
 
 ```bash
-benchmarks/plot_results.py   benchmarks/data/ryzen-9-8945hs/blas_sweep_*.csv   --out docs/img/benchmarks/ryzen/blas-sweep-gflops.png
-benchmarks/plot_results.py   benchmarks/data/ryzen-9-8945hs/lapack_sweep_*.csv --out docs/img/benchmarks/ryzen/lapack-sweep-gflops.png
-benchmarks/analyze_scaling.py benchmarks/data/ryzen-9-8945hs/gemm_scaling_*.csv --plot docs/img/benchmarks/ryzen/gemm-scaling.png
+benchmarks/plot_results.py   benchmarks/data/ryzen-9-8945hs/blas_sweep_*.csv   --out docs/img/benchmarks/amd-ryzen-9-8945hs/blas-sweep-gflops.png
+benchmarks/plot_results.py   benchmarks/data/ryzen-9-8945hs/lapack_sweep_*.csv --out docs/img/benchmarks/amd-ryzen-9-8945hs/lapack-sweep-gflops.png
+benchmarks/analyze_scaling.py benchmarks/data/ryzen-9-8945hs/gemm_scaling_*.csv --plot docs/img/benchmarks/amd-ryzen-9-8945hs/gemm-scaling.png
 ```
 
 The #297 threaded kernel-family sweep (native-fast, one CSV per family):
@@ -278,7 +278,7 @@ The #297 threaded kernel-family sweep (native-fast, one CSV per family):
 benchmarks\run_scaling_297.ps1 -Threads 1,2,4,8 -LapackSizes 1024,2048 -SparseSizes 100,160 -OutDir benchmarks\data\ryzen-9-8945hs
 ```
 ```bash
-benchmarks/analyze_scaling.py benchmarks/data/ryzen-9-8945hs/scaling_*.csv --plot docs/img/benchmarks/ryzen/kernel-scaling-297.png
+benchmarks/analyze_scaling.py benchmarks/data/ryzen-9-8945hs/scaling_*.csv --plot docs/img/benchmarks/amd-ryzen-9-8945hs/kernel-scaling-297.png
 ```
 
 The sparse scoreboards use `bench_klu` / `bench_superlu` (built with the vcpkg
