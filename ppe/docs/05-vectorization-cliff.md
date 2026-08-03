@@ -63,6 +63,38 @@ compiler vectorizes the inner `jj` loop instead and keeps a handful of vector
 accumulators live. The "less optimized" version wins because it left the
 compiler something it could actually do.
 
+## Refinement after the full sweep: the penalty is type-dependent
+
+The measurement across all seven types sharpens this. `v5` is **not** uniformly
+bad — at N=2048 it is the *best* kernel for `int8` (36.4 GOP/s) and `int32`
+(35.9), and catastrophic for the floats (`fp32` 7.3 against `v3`'s 28.6).
+
+Checking the compiler per type settles why:
+
+```
+v5 micro <int32 > : 0 vectorized loops in the microkernel
+v5 micro <double> : 0 vectorized loops in the microkernel
+v5 micro <float > : 0 vectorized loops in the microkernel
+```
+
+**`v5` never vectorizes, for any type.** So the spill is a secondary effect, and
+the proximate mechanism is simpler than "register pressure":
+
+> The compile-time-unrolled microkernel is always scalar, and the penalty for
+> being scalar is proportional to how much that type gains from vectorization.
+
+- `fp32`/`fp64`/`fp16` gain 4–8× from SIMD, so losing it is catastrophic.
+- `int32` gains little, because `vpmulld` is throughput-limited rather than
+  lane-limited — a scalar kernel is competitive, and `v5`'s better instruction
+  scheduling then wins on the margin.
+- `int8`/`int16` widen to `int32` to accumulate, so they inherit that behaviour.
+
+This **answers H5 and reframes H1**: register pressure is not the first-order
+cause. The first-order cause is that full unrolling removes the loop structure
+the vectorizer needs, and whether that matters depends on the type's SIMD
+headroom. H2 (keep the tile, keep the loop) is therefore the experiment to run
+first, ahead of H1 (change the tile shape).
+
 ## What this says generally
 
 **Unrolling and vectorization compete for the same registers.** A microtile has
