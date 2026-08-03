@@ -78,14 +78,27 @@ void pack_A(const T* A, std::ptrdiff_t rs, std::ptrdiff_t cs,
 ///     Bp[q*NR*k + p*NR + j] = (q*NR+j < n) ? B(p, q*NR+j) : 0
 /// for p in [0,k), j in [0,NR). This is exactly what gemm_microkernel reads as
 /// Bp[p*NR + j]. `Bp` must hold packed_B_size(k,n,NR) elements.
+/// Pack only panels [q0, q1) of the same layout, writing each to the offset it
+/// would occupy in a whole-panel pack: panel q owns Bp[q*NR*k, (q+1)*NR*k).
+///
+/// Panels are independent and their destinations are disjoint and computable, so
+/// a team of threads can pack one B block cooperatively by taking disjoint panel
+/// ranges. Packing is pure data movement -- no arithmetic -- so the packed bytes
+/// are identical however the range is split, and any GEMM consuming the result
+/// stays bit-identical. That is what lets the threaded pack in gemm_blocked.hpp
+/// preserve the bit-exactness guarantee (#110).
 template <typename T, std::size_t NR>
     requires mtl::Scalar<T>
-void pack_B(const T* B, std::ptrdiff_t rs, std::ptrdiff_t cs,
-            std::size_t k, std::size_t n, T* Bp) {
+void pack_B_panels(const T* B, std::ptrdiff_t rs, std::ptrdiff_t cs,
+                   std::size_t k, std::size_t n, T* Bp,
+                   std::size_t q0, std::size_t q1) {
     static_assert(NR > 0, "NR must be positive");
-    std::size_t dst = 0;
-    for (std::size_t j0 = 0; j0 < n; j0 += NR) {
+    const std::size_t npanels = (n + NR - 1) / NR;
+    if (q1 > npanels) q1 = npanels;
+    for (std::size_t q = q0; q < q1; ++q) {
+        const std::size_t j0 = q * NR;
         const std::size_t nr = (n - j0 < NR) ? (n - j0) : NR;  // cols in this panel
+        std::size_t dst = q * NR * k;                          // this panel's slot
         for (std::size_t p = 0; p < k; ++p) {
             const T* row = B + static_cast<std::ptrdiff_t>(p) * rs
                              + static_cast<std::ptrdiff_t>(j0) * cs;
@@ -95,6 +108,13 @@ void pack_B(const T* B, std::ptrdiff_t rs, std::ptrdiff_t cs,
                 Bp[dst++] = T(0);  // zero-pad trailing cols up to NR
         }
     }
+}
+
+template <typename T, std::size_t NR>
+    requires mtl::Scalar<T>
+void pack_B(const T* B, std::ptrdiff_t rs, std::ptrdiff_t cs,
+            std::size_t k, std::size_t n, T* Bp) {
+    pack_B_panels<T, NR>(B, rs, cs, k, n, Bp, 0, (n + NR - 1) / NR);
 }
 
 } // namespace mtl::detail
