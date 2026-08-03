@@ -14,6 +14,7 @@ with the system description here.
 | System | CPU | Cores used | Results |
 |--------|-----|-----------|---------|
 | `i7-12700K` | 12th Gen Intel Core i7-12700K | 8 P-cores (E-cores excluded) | [Results](i7-12700k.md) |
+| `ryzen-9-8945hs` | AMD Ryzen 9 8945HS (Zen 4) | 8 cores (SMT siblings excluded) | [Results](ryzen-9-8945hs.md) |
 
 ## `i7-12700K` — desktop hybrid (Alder Lake)
 
@@ -65,6 +66,70 @@ Single-threaded runs additionally pin every vendor's threading to one thread
 the machine than another.
 
 E-cores are never used for measurement. Nothing here characterises them.
+
+## `ryzen-9-8945hs` — mobile Zen 4 (Hawk Point)
+
+A second development machine, and the first Windows/MSVC entry. Its results page
+is a **native-Windows** reproduction of the same suites, which is why its backend
+set differs from the Linux machine (see the two notes below).
+
+| | |
+|---|---|
+| CPU | AMD Ryzen 9 8945HS w/ Radeon 780M (Zen 4, "Hawk Point") |
+| Topology | 8 physical cores, 16 logical (2-way SMT; siblings adjacent, logical 0–1, 2–3, …) |
+| Clocks | 4.0 GHz base, up to ~5.2 GHz boost (not pinned; Windows balanced power plan) |
+| Cache | L1 32 KiB d + 32 KiB i per core, L2 1 MiB per core (8 MiB total), L3 16 MiB (shared) |
+| Memory | 27.8 GiB |
+| OS | Windows 11 Pro 10.0.26200 (25H2) |
+| Compiler | MSVC 19.51.36247 (Visual Studio 18 2026), `/O2 /DNDEBUG` (CMake `Release`) |
+
+These figures are self-reported by each binary via `mtl::util::identify()`
+(`include/mtl/util/system_info.hpp`), and a `<csv>.sysinfo` tag is written next
+to every result CSV — so the machine identity is recorded by the run, not typed
+in by hand.
+
+### Vendor libraries
+
+| Backend | Version | Selected by |
+|---------|---------|-------------|
+| OpenBLAS | 0.3.34 (official Windows binary, `DYNAMIC_ARCH`) | explicit `-DBLAS_LIBRARIES=…\libopenblas.lib` |
+| Intel MKL | 2026.1.0 (pip `mkl-devel`) | explicit `-DBLAS_LIBRARIES=…\mkl_rt.lib` |
+| Google Highway | 1.4.0 (FetchContent) | `-DMTL5_WITH_HIGHWAY=ON` (native-fast SIMD) |
+| SuperLU | 7.0.1 (vcpkg) | `-DMTL5_WITH_SUPERLU=ON` + vcpkg toolchain |
+| SuiteSparse KLU | 7.12.3 (vcpkg) | `-DMTL5_WITH_SUITESPARSE_KLU=ON` + vcpkg toolchain |
+
+**BLIS is absent by construction**: it has no native MSVC build (it configures
+under Clang/MSYS only), so there is no `blis` curve here.
+
+**OpenBLAS is the official prebuilt Windows binary, not vcpkg's.** vcpkg's
+OpenBLAS on MSVC builds an untuned generic kernel (measured ~9 GFLOP/s GEMM, ~8×
+below the tuned build) and ships BLAS only — its `DYNAMIC_ARCH` and LAPACK both
+require a Fortran/mingw toolchain that vcpkg does not use on MSVC. The official
+mingw binary has the runtime-dispatched CPU kernels and a bundled LAPACK, so it
+serves as both the BLAS reference and the OpenBLAS LAPACK curve.
+
+MKL is installed from the `mkl-devel` wheel rather than the oneAPI installer
+(this machine's build account is not elevated). It is the same library at the
+same version the Linux page used (2026.1); only the packaging differs. It is
+linked through the single-dynamic-library dispatcher `mkl_rt.lib`.
+
+### Pinning policy
+
+This is a **homogeneous** 8-core part (no P/E split), but SMT still makes pinning
+mandatory: an unpinned single-thread run can share a physical core with its SMT
+sibling and report a contended number. Pinning uses a Windows processor-affinity
+**bitmask** (there is no `taskset`); `benchmarks/run_sweeps.ps1` and
+`run_scaling.ps1` set it via `System.Diagnostics.Process.ProcessorAffinity`.
+
+| Run type | Affinity mask | Rationale |
+|----------|---------------|-----------|
+| Single-thread sweeps | `0x1` | logical 0 = one thread of physical core 0 (sibling idle) |
+| Scaling runs, `T` threads | OR of `1 << (2·i)`, i < T | one logical id per physical core 0,2,…,2(T−1) — SMT siblings excluded |
+
+The logical→physical map was confirmed with `GetLogicalProcessorInformationEx`
+(a `topology_probe`), not assumed. Single-threaded runs additionally force every
+vendor's threading to one thread (`OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`,
+`MKL_NUM_THREADS=1`, `MTL5_NUM_THREADS=1`).
 
 ## Methodology
 

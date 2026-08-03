@@ -1,0 +1,12 @@
+label=mkl
+cpu_brand=AMD Ryzen 9 8945HS w/ Radeon 780M Graphics
+cpu_vendor=AuthenticAMD
+cpu_arch=x86_64
+cpu_logical_cores=16
+cpu_simd=SSE2 AVX AVX2 FMA AVX512F
+os_name=Windows
+os_version=10.0.26200 (25H2)
+compiler=MSVC
+compiler_version=19.51.36247
+cpp_standard=202002
+build_type=Release
