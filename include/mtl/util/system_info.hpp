@@ -377,7 +377,7 @@ inline std::string to_string(const system_info& si) {
     return s;
 }
 
-/// Flat, machine-parseable key=value lines — for embedding in CSV headers or
+/// Flat, machine-parseable key=value lines -- for embedding in CSV headers or
 /// building a tag for docs/benchmarks/systems.md.
 inline std::string to_keyvals(const system_info& si) {
     std::string s;
