@@ -268,11 +268,27 @@ void gemm_blocked(std::size_t m, std::size_t n, std::size_t k,
             const std::size_t npanels = (nci + NR - 1) / NR;
             for (std::size_t pc = 0; pc < k; pc += KC) {
                 const std::size_t kci = std::min(KC, k - pc);
-                if (ic_id == 0 && !failed.load(std::memory_order_relaxed)) {
-                    try {                                         // team leader packs shared B once
-                        pack_B<TAB, NR>(B + static_cast<std::ptrdiff_t>(pc) * b_rs
-                                          + static_cast<std::ptrdiff_t>(jc) * b_cs,
-                                        b_rs, b_cs, kci, nci, Bteam);
+                // The whole team packs the shared B block cooperatively, each
+                // member taking a disjoint range of NR-column panels. Packing
+                // used to be done by the leader alone while every other member
+                // sat on the barrier -- a serial region proportional to
+                // kc*nc per pc step, which is what capped parallel efficiency
+                // (#110): at N=2048 with one team of 8, thread 0 packed ~67 MB
+                // while 7 cores idled.
+                //
+                // Panels are independent and land at computable disjoint
+                // offsets, and packing is pure data movement, so the packed
+                // bytes -- and therefore the GEMM result -- are identical to
+                // the serial pack for any split.
+                if (!failed.load(std::memory_order_relaxed)) {
+                    try {
+                        const std::size_t per = (npanels + ic_nt - 1) / ic_nt;
+                        const std::size_t q0  = std::min<std::size_t>(npanels, ic_id * per);
+                        const std::size_t q1  = std::min<std::size_t>(npanels, q0 + per);
+                        if (q0 < q1)
+                            pack_B_panels<TAB, NR>(B + static_cast<std::ptrdiff_t>(pc) * b_rs
+                                                     + static_cast<std::ptrdiff_t>(jc) * b_cs,
+                                                   b_rs, b_cs, kci, nci, Bteam, q0, q1);
                     } catch (...) { record_failure(std::current_exception()); }
                 }
                 bar.wait();                                       // publish B to the team
