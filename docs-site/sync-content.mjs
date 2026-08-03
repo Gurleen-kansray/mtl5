@@ -149,8 +149,12 @@ function stripFirstHeading(content) {
 }
 
 function rewriteImagePaths(content) {
+  // Source pages use a relative "../img/..." path so the images also render in
+  // GitHub's raw markdown view (relative to docs/<section>/). Collapse any
+  // leading "../" segments to the site-absolute "/mtl5/img/..." for the built
+  // site. A bare "img/..." (older convention) is still accepted via the * .
   return content
-    .replace(/\]\(img\//g, `](${BASE}/img/`)
+    .replace(/\]\((?:\.\.\/)*img\//g, `](${BASE}/img/`)
     .replace(/```bib/g, '```text');
 }
 
