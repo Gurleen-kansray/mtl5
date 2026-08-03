@@ -34,9 +34,9 @@ That set the pattern for the rest of the day.
 ### Benchmark results site (#320 → #325, #328)
 
 A full measurement pass on the i7-12700K: five BLAS backends, three LAPACK
-backends, four GEMM-scaling backends, five #297 kernel families, and both sparse
-scoreboards — 20 CSVs. Every backend was verified to link what its label claims
-before measuring (`ldd` plus each binary's self-reported config), so no curve is
+backends, four GEMM-scaling backends, six #297 kernel-family CSVs (`gemm_rect`,
+`lu`, `qr`, `chol`, `ewise`, `sparse`), and both sparse scoreboards — 20 CSVs.
+Every backend was verified to link what its label claims before measuring (`ldd` plus each binary's self-reported config), so no curve is
 silently the generic path wearing a vendor label.
 
 The previously committed CSVs predated #227 and covered only `dot`/`nrm2`/
