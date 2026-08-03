@@ -35,6 +35,40 @@
 //      plugs into. `value<Result>` then rounds the exact accumulator out once.
 //
 // Used by the sparse factorizations and the dense BLAS-level operations.
+//
+// WORKSPACE COST (#342). Several accumulator-aware kernels allocate a
+// std::vector<Acc> whose length scales with the problem, not with a register.
+// Measured peak live accumulators on a 2-D Laplacian, so this is the real
+// scaling of these kernels rather than an estimate:
+//
+//     kernel             n=400   n=1600   n=6400   peak/n
+//     sparse_lu            400     1600     6400   1.00
+//     supernodal_ldlt      489     3073     9558   1.22 - 1.92
+//
+// i.e. Theta(n), and up to ~2n for the supernodal dense panel, whose exact
+// multiplier tracks supernode structure and so is matrix-dependent.
+// supernodal_lu and the transposed SpMV in operation/mult.hpp have the same
+// shape.
+//
+// That is free for configurations 1 and 2 -- both are the size of the value
+// type -- but a configuration-3 super-accumulator is sized to the value type's
+// complete dynamic range plus carry-guard bits, so it is one to two orders of
+// magnitude larger per element. At n = 1e6 a workspace that costs 8 MB with a
+// double costs on the order of 64 MB with a posit32 quire and ~536 MB with a
+// binary64 Kulisch accumulator, before the supernodal multiplier.
+//
+// POLICY: the kernels are NOT restructured for this. A caller choosing an
+// exact accumulator is choosing a workspace proportional to sizeof(Acc), and
+// the capacity/guard bits of that accumulator are the lever -- a quire sized
+// for a shorter reduction is correspondingly smaller. Revisit with measurements
+// once a quire specialization exists to measure; restructuring these inner
+// loops for a type that cannot yet be instantiated would be speculative, and
+// the alternatives are not free either (blocking trades passes for memory;
+// splitting the accumulation weakens the single-rounding guarantee that is the
+// entire point of configuration 3).
+//
+// tests/unit/sparse/test_accumulator_workspace.cpp pins the scaling above, so a
+// change that made a workspace superlinear fails rather than silently shipping.
 
 #include <cmath>        // std::fma
 #include <type_traits>
