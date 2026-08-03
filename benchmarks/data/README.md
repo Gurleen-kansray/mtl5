@@ -11,7 +11,7 @@ All CSVs in this directory were produced on:
 
 | | |
 |---|---|
-| Run date | 2026-08-01 (all files below, one session) |
+| Run date | 2026-08-01 for the single-threaded sweeps and the sparse scoreboards; **2026-08-03** for `gemm_scaling_*.csv` and `scaling_*.csv`, re-measured after #348 |
 | CPU | 12th Gen Intel Core i7-12700K (hybrid: 8 P-core + 4 E-core) |
 | Pinning | single thread, pinned to a P-core (`BENCH_CPU=4`); scaling runs pinned to the first T P-cores |
 | OS | Ubuntu 24.04.4 LTS (Noble), kernel 6.8.0-136 |
@@ -65,8 +65,13 @@ odd, non-power-of-2 sizes). The `blas_*` files cover the full L1/L2/L3 core —
 `trmm`, `trsm`, `symm`, `syrk`, `syr2k` — and the `lapack_*` files cover the
 factorizations (`lu_factor`, `qr_factor`, `cholesky`, `eig_sym`).
 
-**Every file in this directory comes from the same session**, so the backends are
-directly comparable. Two absences are deliberate: BLIS has no LAPACK curve
+The threaded files (`gemm_scaling_*`, `scaling_*`) were re-measured together on
+2026-08-03 after the parallel B-pack change (#348), so **the four GEMM-scaling
+backends remain directly comparable with each other**. The single-threaded
+sweeps are from 2026-08-01 and were deliberately not re-run: #348 touches only
+the parallel path. The `T = 1` GEMM figure moves a few percent between sessions
+(57.83 and 57.30 during the #348 verification, 55.46 in the committed sweep),
+which bounds what should be read as signal. Two absences are deliberate: BLIS has no LAPACK curve
 because it is a BLAS-only library (an MTL5 build against it has no LAPACK path,
 so a "blis" factorization curve would be the generic path wearing a vendor
 label), and `scaling_sparse.csv` was measured at grid sides `100,160` rather than
