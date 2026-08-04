@@ -80,6 +80,7 @@ const FILE_MAP = {
   'design/expression-template-architecture.md': 'design/expression-template-architecture.md',
   'design/operation-dispatch-architecture.md':  'design/operation-dispatch-architecture.md',
   'design/iterative-solvers-architecture.md':   'design/iterative-solvers-architecture.md',
+  'design/eigensolvers-architecture.md':        'design/eigensolvers-architecture.md',
   'design/blas-kernel-architecture.md':         'design/blas-kernel-architecture.md',
   'design/multicore-scaling-investigation.md':  'design/multicore-scaling-investigation.md',
   'design/parallelization-patterns-and-pitfalls.md': 'design/parallelization-patterns-and-pitfalls.md',
