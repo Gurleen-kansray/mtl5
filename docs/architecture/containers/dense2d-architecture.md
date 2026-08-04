@@ -393,4 +393,4 @@ specializations — while compiling to the same tight code MTL4 produced.
 | [`detail/ewise.hpp`](https://github.com/stillwater-sc/mtl5/blob/main/include/mtl/detail/ewise.hpp) | `parallel_ewise` used by assignment |
 
 For how the *kernels* that consume `dense2D::data()`/`get_ldim()` are structured,
-see [BLAS kernel architecture](blas-kernel-architecture.md).
+see [BLAS kernel architecture](../../design/blas-kernel-architecture.md).

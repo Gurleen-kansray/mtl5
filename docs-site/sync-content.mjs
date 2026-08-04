@@ -48,6 +48,16 @@ const FILE_MAP = {
   'architecture/concepts.md':        'architecture/concepts.md',
   'architecture/aggregate-types.md': 'architecture/aggregate-types.md',
 
+  // Container & view type architecture (sidebar: Architecture > Containers)
+  'architecture/containers/dense2d-architecture.md':            'architecture/containers/dense2d-architecture.md',
+  'architecture/containers/compressed2d-architecture.md':       'architecture/containers/compressed2d-architecture.md',
+  'architecture/containers/coordinate2d-architecture.md':       'architecture/containers/coordinate2d-architecture.md',
+  'architecture/containers/ell-matrix-architecture.md':         'architecture/containers/ell-matrix-architecture.md',
+  'architecture/containers/dense-vector-architecture.md':       'architecture/containers/dense-vector-architecture.md',
+  'architecture/containers/sparse-vector-architecture.md':      'architecture/containers/sparse-vector-architecture.md',
+  'architecture/containers/strided-vector-ref-architecture.md': 'architecture/containers/strided-vector-ref-architecture.md',
+  'architecture/containers/unit-vector-architecture.md':        'architecture/containers/unit-vector-architecture.md',
+
   // ── Linear Algebra Algorithms ───────────────────────────────────
   'algorithms/overview.md':                     'algorithms/overview.md',
   'algorithms/eigenvalues.md':                  'algorithms/eigenvalues.md',
@@ -67,14 +77,6 @@ const FILE_MAP = {
   // ── Design ──────────────────────────────────────────────────────
   'sparse-direct-solvers-design.md':            'design/sparse-direct-solvers.md',
   'position-mixed-precision-acceleration.md':   'design/mixed-precision-acceleration.md',
-  'design/dense2d-architecture.md':             'design/dense2d-architecture.md',
-  'design/compressed2d-architecture.md':        'design/compressed2d-architecture.md',
-  'design/coordinate2d-architecture.md':        'design/coordinate2d-architecture.md',
-  'design/ell-matrix-architecture.md':          'design/ell-matrix-architecture.md',
-  'design/dense-vector-architecture.md':        'design/dense-vector-architecture.md',
-  'design/sparse-vector-architecture.md':       'design/sparse-vector-architecture.md',
-  'design/strided-vector-ref-architecture.md':  'design/strided-vector-ref-architecture.md',
-  'design/unit-vector-architecture.md':         'design/unit-vector-architecture.md',
   'design/expression-template-architecture.md': 'design/expression-template-architecture.md',
   'design/blas-kernel-architecture.md':         'design/blas-kernel-architecture.md',
   'design/multicore-scaling-investigation.md':  'design/multicore-scaling-investigation.md',

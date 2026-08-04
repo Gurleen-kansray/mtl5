@@ -37,7 +37,16 @@ export default defineConfig({
         },
         {
           label: 'Architecture',
-          autogenerate: { directory: 'architecture' },
+          items: [
+            { slug: 'architecture' },
+            { slug: 'architecture/concepts' },
+            { slug: 'architecture/aggregate-types' },
+            {
+              // Per-type architecture docs for every mat/ and vec/ container.
+              label: 'Containers',
+              autogenerate: { directory: 'architecture/containers' },
+            },
+          ],
         },
         {
           label: 'Modernization',
