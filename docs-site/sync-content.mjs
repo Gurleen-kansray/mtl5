@@ -69,6 +69,7 @@ const FILE_MAP = {
   'design/dense2d-architecture.md':             'design/dense2d-architecture.md',
   'design/compressed2d-architecture.md':        'design/compressed2d-architecture.md',
   'design/coordinate2d-architecture.md':        'design/coordinate2d-architecture.md',
+  'design/ell-matrix-architecture.md':          'design/ell-matrix-architecture.md',
   'design/blas-kernel-architecture.md':         'design/blas-kernel-architecture.md',
   'design/multicore-scaling-investigation.md':  'design/multicore-scaling-investigation.md',
   'design/parallelization-patterns-and-pitfalls.md': 'design/parallelization-patterns-and-pitfalls.md',
