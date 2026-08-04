@@ -71,6 +71,7 @@ const FILE_MAP = {
   'design/compressed2d-architecture.md':        'design/compressed2d-architecture.md',
   'design/coordinate2d-architecture.md':        'design/coordinate2d-architecture.md',
   'design/ell-matrix-architecture.md':          'design/ell-matrix-architecture.md',
+  'design/dense-vector-architecture.md':        'design/dense-vector-architecture.md',
   'design/blas-kernel-architecture.md':         'design/blas-kernel-architecture.md',
   'design/multicore-scaling-investigation.md':  'design/multicore-scaling-investigation.md',
   'design/parallelization-patterns-and-pitfalls.md': 'design/parallelization-patterns-and-pitfalls.md',
@@ -136,11 +137,14 @@ const LINK_LOOKUP = buildLinkLookup();
 
 function rewriteLinks(content, srcRelative) {
   const srcDir = posix.dirname(srcRelative);
-  return content.replace(/\]\(([^)]+\.md)\)/g, (match, target) => {
+  // Match ](path.md) and ](path.md#anchor); the .md path is resolved via the
+  // link lookup and a trailing #section anchor (if any) is preserved verbatim,
+  // so cross-page section links survive the rewrite instead of 404-ing.
+  return content.replace(/\]\(([^)#]+\.md)(#[^)]*)?\)/g, (match, target, anchor = '') => {
     if (target.startsWith('http://') || target.startsWith('https://')) return match;
     const resolved = posix.normalize(posix.join(srcDir, target));
     const url = LINK_LOOKUP[resolved];
-    return url ? `](${url})` : match;
+    return url ? `](${url}${anchor})` : match;
   });
 }
 
