@@ -62,7 +62,33 @@ export default defineConfig({
         },
         {
           label: 'Design',
-          autogenerate: { directory: 'design' },
+          items: [
+            {
+              label: 'Parallelization',
+              items: [
+                { slug: 'design/parallelization-patterns-and-pitfalls' },
+                { slug: 'design/blas-kernel-architecture' },
+              ],
+            },
+            {
+              label: 'Library',
+              items: [
+                { slug: 'design/mixed-precision-acceleration' },
+                { slug: 'design/expression-template-architecture' },
+                { slug: 'design/operation-dispatch-architecture' },
+                { slug: 'design/mixed-precision-custom-types-simd' },
+                { slug: 'design/sparse-direct-solvers' },
+              ],
+            },
+            {
+              label: 'Benchmarking',
+              items: [
+                { slug: 'design/multicore-scaling-investigation' },
+                { slug: 'design/issue-297-threading-benchmark-plan' },
+                { slug: 'design/issue-297-threading-results' },
+              ],
+            },
+          ],
         },
         {
           label: 'Examples',
