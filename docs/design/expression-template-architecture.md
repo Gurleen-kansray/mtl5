@@ -3,8 +3,8 @@
 How MTL5 evaluates `x = a + b*2 - c` **without** building three intermediate
 vectors, and *why* the machinery is shaped the way it is. This is the layer the
 container docs keep pointing at: the reason
-[`dense_vector`](dense-vector-architecture.md) and
-[`dense2D`](dense2d-architecture.md) have a templated `operator=` that takes "an
+[`dense_vector`](../architecture/containers/dense-vector-architecture.md) and
+[`dense2D`](../architecture/containers/dense2d-architecture.md) have a templated `operator=` that takes "an
 expression." This page is what that expression *is*.
 
 The organizing goal is **fusion**: an arithmetic combination of vectors (or
@@ -205,8 +205,8 @@ are always stored by value — they are cheap and often temporaries themselves.)
 
 The tree is inert until it meets a concrete container. The container's templated
 assignment — documented on the
-[dense_vector](dense-vector-architecture.md#the-shared-foundation-see-the-dense2d-doc)
-and [dense2D](dense2d-architecture.md#expression-templates-assignment-and-mixed-precision)
+[dense_vector](../architecture/containers/dense-vector-architecture.md#the-shared-foundation-see-the-dense2d-doc)
+and [dense2D](../architecture/containers/dense2d-architecture.md#expression-templates-assignment-and-mixed-precision)
 side — is where evaluation and fusion happen:
 
 ```cpp
@@ -335,7 +335,7 @@ trait, and fused at the point of assignment.
 | [`detail/ewise.hpp`](https://github.com/stillwater-sc/mtl5/blob/main/include/mtl/detail/ewise.hpp) | `parallel_ewise`, the materialization sweep |
 
 For where expressions are *consumed*, see the
-[dense_vector](dense-vector-architecture.md) and
-[dense2D](dense2d-architecture.md) architecture docs; for the GEMM path that
+[dense_vector](../architecture/containers/dense-vector-architecture.md) and
+[dense2D](../architecture/containers/dense2d-architecture.md) architecture docs; for the GEMM path that
 matrix-multiply expressions dispatch to, the
 [BLAS kernel architecture](blas-kernel-architecture.md).
