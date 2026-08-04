@@ -1,6 +1,7 @@
 // MTL5 -- accumulator policy for gemv and the sum-of-squares norms (#160, #162).
 // Mirrors dot/gemm: an explicit Accumulator sums in a precision distinct from the
 // element type, with the result delivered in the natural output/magnitude type.
+#include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
@@ -90,24 +91,58 @@ TEST_CASE("frobenius_norm accumulator policy", "[operation][norms][accumulator]"
 // These are primarily compile-time pins: the failure was at instantiation.
 // ---------------------------------------------------------------------------
 
+namespace {
+// Exact sum of squares in double-double, via FMA. Portable: needs only IEEE
+// double, unlike a `long double` reference, which is 80-bit on x86-64 and only
+// 64-bit on Apple ARM64 -- where it is no better than the values under test and
+// WORSE than a compensated accumulator, so the more accurate answer scores as
+// the less accurate one. That is precisely how the first version of this test
+// failed on macOS ARM64 while passing on x86-64.
+struct dd { double hi{}, lo{}; };
+inline void dd_add(dd& a, double x) {          // Knuth two-sum
+    double s = a.hi + x;
+    double bb = s - a.hi;
+    a.lo += (a.hi - (s - bb)) + (x - bb);
+    a.hi = s;
+}
+inline double exact_sum_of_squares(const float* p, std::size_t n) {
+    dd acc;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double x = static_cast<double>(p[i]);
+        const double prod = x * x;                       // exact: 24-bit input
+        const double err  = std::fma(x, x, -prod);       // the rounded-off part
+        dd_add(acc, prod);
+        dd_add(acc, err);
+    }
+    return acc.hi + acc.lo;
+}
+}  // namespace
+
 // Configuration 3 stand-in: an exact compensated super-accumulator, playing the
 // role of a Universal quire. MTL5 stays free of any external number library, so
 // the real quire specialization lives in the peer repo; this exercises the same
 // contract -- a custom Acc with no sqrt of its own.
+//
+// Accumulates in `double`, deliberately NOT `long double`. `long double` is
+// 80-bit on x86-64, 64-bit (i.e. plain double) on Apple ARM64 and MSVC, and
+// 128-bit on ARM64 Linux -- three different precisions across lanes this repo
+// already builds on. Compensated summation recovers roughly twice the base
+// type's precision on its own, so this is bit-identically accurate here without
+// depending on a type whose width varies by ~60 bits between targets.
 namespace {
-struct kahan_acc { long double sum{}, c{}; };
+struct kahan_acc { double sum{}, c{}; };
 }
 namespace mtl::math {
 template <typename Value>
 struct accumulator_traits<kahan_acc, Value> {
     using Acc = kahan_acc;
     static void clear(Acc& a) { a.sum = 0; a.c = 0; }
-    static void assign(Acc& a, const Value& v) { a.sum = static_cast<long double>(v); a.c = 0; }
+    static void assign(Acc& a, const Value& v) { a.sum = static_cast<double>(v); a.c = 0; }
     template <typename Result = Value>
     static Result value(const Acc& a) { return static_cast<Result>(a.sum); }
     static void add_product(Acc& a, const Value& m, const Value& v) {
-        long double y = static_cast<long double>(m) * static_cast<long double>(v) - a.c;
-        long double t = a.sum + y;
+        double y = static_cast<double>(m) * static_cast<double>(v) - a.c;
+        double t = a.sum + y;
         a.c = (t - a.sum) - y;
         a.sum = t;
     }
@@ -120,10 +155,7 @@ TEST_CASE("two_norm/frobenius_norm accept every accumulator configuration (#324)
     vec::dense_vector<float> v(n);
     for (std::size_t i = 0; i < n; ++i) v[i] = 1.0f + static_cast<float>(i % 7) * 1e-6f;
 
-    long double ref = 0.0L;
-    for (std::size_t i = 0; i < n; ++i)
-        ref += static_cast<long double>(v[i]) * static_cast<long double>(v[i]);
-    const double exact = static_cast<double>(std::sqrt(ref));
+    const double exact = std::sqrt(exact_sum_of_squares(v.data(), n));
 
     // Configuration 1: plain arithmetic accumulator (already worked).
     const auto c1 = two_norm<double>(v);
@@ -149,11 +181,11 @@ TEST_CASE("two_norm/frobenius_norm accept every accumulator configuration (#324)
         for (std::size_t c = 0; c < 120; ++c)
             M(r, c) = 1.0f + static_cast<float>((r + c) % 5) * 1e-6f;
 
-    long double fref = 0.0L;
+    std::vector<float> Mflat;
+    Mflat.reserve(120 * 120);
     for (std::size_t r = 0; r < 120; ++r)
-        for (std::size_t c = 0; c < 120; ++c)
-            fref += static_cast<long double>(M(r, c)) * static_cast<long double>(M(r, c));
-    const double fexact = static_cast<double>(std::sqrt(fref));
+        for (std::size_t c = 0; c < 120; ++c) Mflat.push_back(M(r, c));
+    const double fexact = std::sqrt(exact_sum_of_squares(Mflat.data(), Mflat.size()));
 
     const auto f1 = frobenius_norm<double>(M);
     const auto f2 = frobenius_norm<math::fma_accumulator<double>>(M);
@@ -174,4 +206,97 @@ TEST_CASE("accumulator_round_type names the accumulator's own precision (#324)",
     // A custom accumulator has no nameable arithmetic type, so it delivers in
     // the magnitude type -- external specializations need supply nothing new.
     STATIC_REQUIRE(std::is_same_v<math::accumulator_round_type_t<kahan_acc, float>, float>);
+}
+
+// ---------------------------------------------------------------------------
+// #379: two_norm/frobenius_norm gain a Result parameter, as dot already has.
+//
+// The subtle part is what Result governs. It is NOT only the final cast.
+// accumulator_round_type_t<Acc, Mag> maps a non-arithmetic accumulator to Mag,
+// so if the round-out stayed at the element magnitude type, an exact
+// accumulation would be flattened to element precision BEFORE the sqrt and no
+// return type could recover it. Result therefore feeds BOTH the round-out and
+// the cast -- otherwise `two_norm<quire, double>` is not merely unhelpful, it is
+// strictly WORSE than `two_norm<double, double>`, which inverts the ordering a
+// caller is choosing between.
+// ---------------------------------------------------------------------------
+
+
+TEST_CASE("two_norm/frobenius_norm Result parameter (#379)",
+          "[operation][norms][accumulator][regression]") {
+    const std::size_t n = 20000;
+    vec::dense_vector<float> v(n);
+    for (std::size_t i = 0; i < n; ++i) v[i] = 1.0f + static_cast<float>(i % 7) * 1e-6f;
+
+    const double exact = std::sqrt(exact_sum_of_squares(v.data(), n));
+    const auto rel = [&](double x) { return std::abs(x - exact) / exact; };
+
+    SECTION("Result = void is byte-for-byte today's behaviour") {
+        // The whole change must be additive: no existing call may move.
+        const auto a = two_norm<double>(v);
+        const auto b = two_norm<kahan_acc>(v);
+        STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(a)>, float>);
+        STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(b)>, float>);
+        // Both bottleneck on the float delivery type -- which is exactly the
+        // observation that motivated #379.
+        REQUIRE(a == b);
+    }
+
+    SECTION("Result widens the delivery type") {
+        const auto c = two_norm<double, double>(v);
+        const auto d = two_norm<kahan_acc, double>(v);
+        STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(c)>, double>);
+        STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(d)>, double>);
+
+        // Both are far better than the float-delivered versions.
+        REQUIRE(rel(c) < 1e-12);
+        REQUIRE(rel(d) < 1e-12);
+    }
+
+    SECTION("the accumulator becomes observable, and in the right direction") {
+        const auto c = two_norm<double, double>(v);     // fp64 accumulation
+        const auto d = two_norm<kahan_acc, double>(v);  // exact accumulation
+
+        // Observable at all: this is what #379 asked for.
+        REQUIRE(d != c);
+        // ...and better, not worse. Implementing Result as only the final cast
+        // would have made the exact accumulator LESS accurate than the fp64 one
+        // (2.4e-08 against 1.4e-14), inverting the choice.
+        //
+        // Ordering, not an exact value. `REQUIRE(rel(d) == 0.0)` held on x86-64
+        // and failed on macOS ARM64: it asserted a rounding coincidence of the
+        // reference rather than anything about the feature.
+        REQUIRE(rel(d) <= rel(c));
+    }
+
+    SECTION("frobenius_norm behaves the same way") {
+        mat::dense2D<float> m(100, 200);
+        std::vector<float> flat;
+        flat.reserve(100 * 200);
+        for (std::size_t i = 0; i < 100; ++i)
+            for (std::size_t j = 0; j < 200; ++j) {
+                m(i, j) = 1.0f + static_cast<float>((i + j) % 7) * 1e-6f;
+                flat.push_back(m(i, j));
+            }
+        const double fexact = std::sqrt(exact_sum_of_squares(flat.data(), flat.size()));
+
+        const auto f0 = frobenius_norm<double>(m);
+        const auto f1 = frobenius_norm<double, double>(m);
+        const auto f2 = frobenius_norm<kahan_acc, double>(m);
+        STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(f0)>, float>);
+        STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(f1)>, double>);
+        STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(f2)>, double>);
+
+        REQUIRE(std::abs(f1 - fexact) / fexact < 1e-12);
+        REQUIRE(std::abs(f2 - fexact) / fexact <= std::abs(f1 - fexact) / fexact);
+    }
+
+    SECTION("Result also works with the fma_accumulator configuration") {
+        // accumulator_round_type_t<fma_accumulator<T>, Mag> is T regardless of
+        // Mag, which is correct: the accumulator really does hold T precision,
+        // so Result widens the delivery without falsely claiming more.
+        const auto e = two_norm<math::fma_accumulator<double>, double>(v);
+        STATIC_REQUIRE(std::is_same_v<std::decay_t<decltype(e)>, double>);
+        REQUIRE(rel(e) < 1e-12);
+    }
 }
