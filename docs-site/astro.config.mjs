@@ -76,6 +76,7 @@ export default defineConfig({
                 { slug: 'design/mixed-precision-acceleration' },
                 { slug: 'design/expression-template-architecture' },
                 { slug: 'design/operation-dispatch-architecture' },
+                { slug: 'design/iterative-solvers-architecture' },
                 { slug: 'design/mixed-precision-custom-types-simd' },
                 { slug: 'design/sparse-direct-solvers' },
               ],
