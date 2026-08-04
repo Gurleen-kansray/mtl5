@@ -78,6 +78,8 @@ export default defineConfig({
                 { slug: 'design/operation-dispatch-architecture' },
                 { slug: 'design/iterative-solvers-architecture' },
                 { slug: 'design/eigensolvers-architecture' },
+                { slug: 'design/smoothers-architecture' },
+                { slug: 'design/multigrid-architecture' },
                 { slug: 'design/mixed-precision-custom-types-simd' },
                 { slug: 'design/sparse-direct-solvers' },
               ],

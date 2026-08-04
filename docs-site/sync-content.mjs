@@ -81,6 +81,8 @@ const FILE_MAP = {
   'design/operation-dispatch-architecture.md':  'design/operation-dispatch-architecture.md',
   'design/iterative-solvers-architecture.md':   'design/iterative-solvers-architecture.md',
   'design/eigensolvers-architecture.md':        'design/eigensolvers-architecture.md',
+  'design/smoothers-architecture.md':           'design/smoothers-architecture.md',
+  'design/multigrid-architecture.md':           'design/multigrid-architecture.md',
   'design/blas-kernel-architecture.md':         'design/blas-kernel-architecture.md',
   'design/multicore-scaling-investigation.md':  'design/multicore-scaling-investigation.md',
   'design/parallelization-patterns-and-pitfalls.md': 'design/parallelization-patterns-and-pitfalls.md',
