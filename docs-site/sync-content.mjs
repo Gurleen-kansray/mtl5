@@ -66,6 +66,7 @@ const FILE_MAP = {
   // ── Design ──────────────────────────────────────────────────────
   'sparse-direct-solvers-design.md':            'design/sparse-direct-solvers.md',
   'position-mixed-precision-acceleration.md':   'design/mixed-precision-acceleration.md',
+  'design/dense2d-architecture.md':             'design/dense2d-architecture.md',
   'design/blas-kernel-architecture.md':         'design/blas-kernel-architecture.md',
   'design/multicore-scaling-investigation.md':  'design/multicore-scaling-investigation.md',
   'design/parallelization-patterns-and-pitfalls.md': 'design/parallelization-patterns-and-pitfalls.md',
