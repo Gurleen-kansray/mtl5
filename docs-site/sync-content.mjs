@@ -75,6 +75,7 @@ const FILE_MAP = {
   'design/sparse-vector-architecture.md':       'design/sparse-vector-architecture.md',
   'design/strided-vector-ref-architecture.md':  'design/strided-vector-ref-architecture.md',
   'design/unit-vector-architecture.md':         'design/unit-vector-architecture.md',
+  'design/expression-template-architecture.md': 'design/expression-template-architecture.md',
   'design/blas-kernel-architecture.md':         'design/blas-kernel-architecture.md',
   'design/multicore-scaling-investigation.md':  'design/multicore-scaling-investigation.md',
   'design/parallelization-patterns-and-pitfalls.md': 'design/parallelization-patterns-and-pitfalls.md',
