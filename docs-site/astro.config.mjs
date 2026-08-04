@@ -81,7 +81,7 @@ export default defineConfig({
               ],
             },
             {
-              label: 'Benchmarking',
+              label: 'Performance studies',
               items: [
                 { slug: 'design/multicore-scaling-investigation' },
                 { slug: 'design/issue-297-threading-benchmark-plan' },
