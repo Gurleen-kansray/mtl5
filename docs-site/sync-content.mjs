@@ -83,12 +83,13 @@ const FILE_MAP = {
   'design/eigensolvers-architecture.md':        'design/eigensolvers-architecture.md',
   'design/smoothers-architecture.md':           'design/smoothers-architecture.md',
   'design/multigrid-architecture.md':           'design/multigrid-architecture.md',
+  'design/dense-direct-solvers-architecture.md': 'design/dense-direct-solvers-architecture.md',
   'design/blas-kernel-architecture.md':         'design/blas-kernel-architecture.md',
   'design/multicore-scaling-investigation.md':  'design/multicore-scaling-investigation.md',
   'design/parallelization-patterns-and-pitfalls.md': 'design/parallelization-patterns-and-pitfalls.md',
   'design/issue-297-threading-benchmark-plan.md': 'design/issue-297-threading-benchmark-plan.md',
   'design/issue-297-threading-results.md': 'design/issue-297-threading-results.md',
-  'design/mixed-precision-custom-types-SIMD.md': 'design/mixed-precision-custom-types-SIMD.md',
+  'design/mixed-precision-custom-types-SIMD.md': 'design/mixed-precision-custom-types-simd.md',
 
   // ── Modernization ──────────────────────────────────────────────────────
   'modernization/advanced-itl-components.md':                  'modernization/advanced-itl-components.md',
