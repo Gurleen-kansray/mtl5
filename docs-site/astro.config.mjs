@@ -81,6 +81,7 @@ export default defineConfig({
                 { slug: 'design/smoothers-architecture' },
                 { slug: 'design/multigrid-architecture' },
                 { slug: 'design/mixed-precision-custom-types-simd' },
+                { slug: 'design/dense-direct-solvers-architecture' },
                 { slug: 'design/sparse-direct-solvers' },
               ],
             },
