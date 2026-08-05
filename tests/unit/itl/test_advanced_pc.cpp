@@ -11,6 +11,7 @@
 #include <mtl/operation/norms.hpp>
 #include <mtl/operation/dot.hpp>
 #include <mtl/operation/lu.hpp>
+#include <mtl/math/accumulator_traits.hpp>
 #include <mtl/itl/pc/identity.hpp>
 #include <mtl/itl/pc/ilut.hpp>
 #include <mtl/itl/pc/ildl.hpp>
@@ -165,6 +166,112 @@ TEST_CASE("Block diagonal preconditioned BiCGSTAB converges", "[itl][pc][block_d
 }
 
 // --- SSOR tests ---
+
+namespace {
+int g_ssor_addproduct_calls = 0;
+struct counting_wide_acc { double v = 0.0; };
+}  // namespace
+
+namespace mtl::math {
+template <>
+struct accumulator_traits<counting_wide_acc, float> {
+    static void clear(counting_wide_acc& a) { a.v = 0.0; }
+    static void assign(counting_wide_acc& a, const float& x) { a.v = static_cast<double>(x); }
+    template <typename Result = float>
+    static Result value(const counting_wide_acc& a) { return static_cast<Result>(a.v); }
+    static void add_product(counting_wide_acc& a, const float& m, const float& x) {
+        ++g_ssor_addproduct_calls;
+        a.v += static_cast<double>(m) * static_cast<double>(x);
+    }
+};
+}  // namespace mtl::math
+
+TEST_CASE("SSOR preconditioner routes through accumulator_traits (#405)",
+          "[itl][pc][ssor][accumulator]") {
+    // The capability the #405 refactor buys. Before it, pc::ssor reimplemented
+    // the sweeps and had no Accumulator parameter at all: you could SMOOTH in
+    // mixed precision but not PRECONDITION in it, and nothing in the API said
+    // so. Now the parameter is forwarded to smoother::sor, which already
+    // routes the off-diagonal row sum through accumulator_traits.
+    const std::size_t n = 16;
+    mat::compressed2D<float> A(n, n);
+    {
+        mat::inserter<mat::compressed2D<float>> ins(A);
+        for (std::size_t i = 0; i < n; ++i) {
+            ins[i][i] << 4.0f;
+            if (i)         ins[i][i - 1] << -1.0f;
+            if (i + 1 < n) ins[i][i + 1] << -1.0f;
+        }
+    }
+    vec::dense_vector<float> b(n, 1.0f), x(n, 0.0f);
+
+    itl::pc::ssor<mat::compressed2D<float>, counting_wide_acc> pc(A, 1.0f);
+    g_ssor_addproduct_calls = 0;
+    pc.solve(x, b);
+
+    // The accumulator was actually used, and BOTH sweeps ran. An exact count,
+    // not just > 0: solve() now DELEGATES rather than running two visible
+    // loops, so losing one of the two sweeps is exactly the regression this
+    // refactor makes possible, and > 0 would sail straight past it.
+    //
+    // add_product fires once per STORED off-diagonal entry (the diagonal is
+    // skipped by index, not by value). This tridiagonal A holds 1 off-diagonal
+    // in each of rows 0 and n-1 and 2 in each of the n-2 interior rows, so
+    // 2*(n-1) per sweep and 4*(n-1) for the forward+backward pair.
+    INFO("add_product calls = " << g_ssor_addproduct_calls);
+    REQUIRE(g_ssor_addproduct_calls == static_cast<int>(4 * (n - 1)));
+
+    // And it still computes M^-1 b: applying M to the result returns b.
+    // M = (D + L) D^-1 (D + U) at omega = 1, so M x is three triangular
+    // products; forming it densely is clearer than reasoning about the sweeps.
+    vec::dense_vector<float> t(n, 0.0f), Mx(n, 0.0f);
+    for (std::size_t i = 0; i < n; ++i) {            // t = D^-1 (D + U) x
+        float s = 0.0f;
+        for (std::size_t j = i; j < n; ++j) s += A(i, j) * x(j);
+        t(i) = s / A(i, i);
+    }
+    for (std::size_t i = 0; i < n; ++i) {            // Mx = (D + L) t
+        float s = 0.0f;
+        for (std::size_t j = 0; j <= i; ++j) s += A(i, j) * t(j);
+        Mx(i) = s;
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        REQUIRE_THAT(Mx(i), Catch::Matchers::WithinAbs(b(i), 1e-5f));
+
+    // The default (void) accumulator must not touch it -- same object, no calls.
+    itl::pc::ssor<mat::compressed2D<float>> pc_default(A, 1.0f);
+    vec::dense_vector<float> x2(n, 0.0f);
+    g_ssor_addproduct_calls = 0;
+    pc_default.solve(x2, b);
+    REQUIRE(g_ssor_addproduct_calls == 0);
+}
+
+TEST_CASE("SSOR preconditioner on a 1x1 matrix (#405)",
+          "[itl][pc][ssor][accumulator][edge]") {
+    // The one case where the accumulator branch yields a result without ever
+    // accumulating: with no off-diagonal entries the row sum is empty, so
+    // add_product is never called and sigma comes from AT::value on a freshly
+    // cleared accumulator. If clear() and value() disagreed about what an empty
+    // sum means, every other size would hide it behind real terms.
+    mat::compressed2D<float> A(1, 1);
+    { mat::inserter<mat::compressed2D<float>> ins(A); ins[0][0] << 4.0f; }
+    vec::dense_vector<float> b(1, 1.0f), x(1, 0.0f);
+
+    itl::pc::ssor<mat::compressed2D<float>, counting_wide_acc> pc(A, 1.0f);
+    g_ssor_addproduct_calls = 0;
+    pc.solve(x, b);
+
+    REQUIRE(g_ssor_addproduct_calls == 0);       // nothing to accumulate
+    // M = (D + L) D^-1 (D + U) collapses to D = 4, so M^-1 b = 1/4 exactly.
+    REQUIRE_THAT(x(0), Catch::Matchers::WithinAbs(0.25f, 1e-6f));
+
+    // Same answer without the accumulator, so the empty-sum path agrees with
+    // the naive one rather than merely being self-consistent.
+    itl::pc::ssor<mat::compressed2D<float>> pc_default(A, 1.0f);
+    vec::dense_vector<float> x2(1, 0.0f);
+    pc_default.solve(x2, b);
+    REQUIRE_THAT(x2(0), Catch::Matchers::WithinAbs(0.25f, 1e-6f));
+}
 
 TEST_CASE("SSOR applies exactly the classical SSOR operator (#398)",
           "[itl][pc][ssor][regression]") {
