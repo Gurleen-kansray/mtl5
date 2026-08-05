@@ -16,7 +16,7 @@ hero:
       icon: external
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 <CardGrid stagger>
   <Card title="Pure C++20" icon="seti:cpp">
@@ -30,12 +30,51 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     the [Universal](https://github.com/stillwater-sc/universal) library.
   </Card>
   <Card title="Dense & Sparse" icon="list-format">
-    CSR, CSC, COO, ELLPACK, dense row/column-major matrices with expression templates.
+    CSR, COO, ELLPACK, dense row/column-major matrices with expression templates.
   </Card>
   <Card title="Iterative Solvers" icon="rocket">
-    CG, BiCGSTAB, GMRES, IDR(s), and more — with preconditioners and smoothers.
+    CG, BiCGSTAB, GMRES, IDR(s), and more — with preconditioners, smoothers, and multigrid.
   </Card>
-  <Card title="Sparse Direct Solvers" icon="setting">
-    Built-in Cholesky, LU, and QR factorizations with AMD/COLAMD orderings.
+  <Card title="Direct Solvers" icon="setting">
+    Dense LU / Cholesky / LDLᵀ / QR / SVD and sparse KLU / SuperLU, LAPACK-dispatched.
   </Card>
+</CardGrid>
+
+## Architecture & design
+
+The library's internals are documented layer by layer — how each piece works, and
+*why* it is shaped that way. Start with a data structure, or trace the path from an
+expression down to the kernel that runs it.
+
+<CardGrid>
+  <LinkCard
+    title="Container types"
+    href="/mtl5/architecture/containers/dense2d-architecture/"
+    description="Dense & sparse matrices, vectors, and views — the storage design of every mat/ and vec/ type."
+  />
+  <LinkCard
+    title="Expression templates"
+    href="/mtl5/design/expression-template-architecture/"
+    description="Lazy, fused arithmetic without temporaries, unified by C++20 concepts instead of a CRTP hierarchy."
+  />
+  <LinkCard
+    title="Operation dispatch"
+    href="/mtl5/design/operation-dispatch-architecture/"
+    description="One API, many kernels — native, BLAS, and LAPACK paths selected at compile time, with a generic floor."
+  />
+  <LinkCard
+    title="Direct solvers"
+    href="/mtl5/design/dense-direct-solvers-architecture/"
+    description="Dense factorizations (LU, Cholesky, LDLᵀ, QR, SVD) and their sparse counterparts — factor once, solve many."
+  />
+  <LinkCard
+    title="Iterative & eigen solvers"
+    href="/mtl5/design/iterative-solvers-architecture/"
+    description="Krylov methods and preconditioners, eigensolvers, smoothers, and multigrid — composed from swappable roles."
+  />
+  <LinkCard
+    title="Mixed precision"
+    href="/mtl5/design/mixed-precision-acceleration/"
+    description="Precision as a first-class design axis: custom number types and mixed-precision accumulation throughout."
+  />
 </CardGrid>
