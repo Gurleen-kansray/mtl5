@@ -20,7 +20,8 @@
 
 #include <cstddef>
 
-#include <mtl/simd/batch.hpp>   // simd::width<T>
+#include <mtl/simd/batch.hpp>        // simd::width<T>
+#include <mtl/util/cache_info.hpp>   // util::cached_cache_info (#222)
 
 namespace mtl::simd {
 
@@ -173,8 +174,78 @@ constexpr blocking_params derive_blocking(std::size_t nvec,
 }
 
 /// Blocking parameters for `T` using the compiled SIMD width and the default
-/// hardware traits. (#90 will let the hw_traits be overridden per build.)
+/// hardware traits. Compile-time, and the source of the mr x nr register tile
+/// (a micro-kernel template argument) everywhere.
 template <typename T>
 inline constexpr blocking_params default_blocking = derive_blocking<T>(width<T>);
+
+/// `default_hw_traits` with the CACHE fields replaced by what the running machine
+/// reports (#222). Detected once per process; a field the platform could not
+/// report keeps its compile-time default, so an undetectable machine behaves
+/// exactly as it did before this existed.
+///
+/// The FMA latency/issue width and the vector register file are NOT overridden.
+/// They determine mr x nr, which is a template argument of the compiled
+/// micro-kernel: a runtime value could not be applied to it, and pretending
+/// otherwise would produce a tile the kernel does not implement. Keeping them
+/// compile-time is also what guarantees `runtime_blocking<T>().mr == default_blocking<T>.mr`
+/// (likewise nr), so the two agree on the register tile by construction and only
+/// the cache blocks can differ.
+/// Overlay detected cache figures on a base description, field by field. Pure,
+/// so the fallback is testable with hierarchies the host does not have.
+///
+/// A 0 field means NOT DETECTED and keeps the base value.
+///
+/// L3 IS DELIBERATELY NOT APPLIED, though cache_info detects it. l3_bytes feeds
+/// only nc, and nc sets the jc BLOCK COUNT, njb = ceil(n/nc) -- which the
+/// threaded nest hands to jc-teams round-robin, so the critical path is
+/// ceil(njb/jc_nt) and an njb that is not a multiple of jc_nt leaves teams
+/// unequal. Measured (Xeon E5-2420 v2, 6 threads, m=96 n=16384 k=1024, fp64):
+/// applying the detected 15 MB L3 moved nc 2048 -> 3840 and njb 8 -> 5, so two
+/// teams took 3 and 2 blocks instead of 4 and 4 -- a 1.2x critical path and a
+/// measured 10-25% REGRESSION. kc and mc carry no such hazard: they size blocks
+/// within a partition rather than the number of partitioned units.
+///
+/// This is #408's failure mode one loop over -- there a register-tile change
+/// moved mc 64 -> 60 and nib 16 -> 18, unbalancing the ic partition. The ic loop
+/// has detail::balanced_mc to absorb it; the jc loop has no equivalent yet. Once
+/// a balanced_nc exists, L3 can be applied here. Tracked separately so that
+/// partition change gets its own measurement rather than riding along with cache
+/// detection.
+constexpr hw_traits with_detected_caches(hw_traits base, const util::cache_info& c) {
+    if (c.l1d_bytes  != 0) base.l1_bytes   = c.l1d_bytes;   // -> kc
+    if (c.l1d_assoc  != 0) base.l1_assoc   = c.l1d_assoc;
+    if (c.line_bytes != 0) base.line_bytes = c.line_bytes;
+    if (c.l2_bytes   != 0) base.l2_bytes   = c.l2_bytes;    // -> mc
+    return base;
+}
+
+inline const hw_traits& detected_hw_traits() {
+    static const hw_traits hw =
+        with_detected_caches(default_hw_traits, util::cached_cache_info());
+    return hw;
+}
+
+/// Blocking parameters for `T` derived against the DETECTED hardware. Use kc and
+/// mc from this; take mr/nr from `default_blocking<T>` (the tile the micro-kernel
+/// was instantiated with) and nc from there too, since L3 is not overridden --
+/// see with_detected_caches. Computed once per element type.
+template <typename T>
+inline const blocking_params& runtime_blocking() {
+    static const blocking_params bp = [] {
+        blocking_params p = derive_blocking<T>(width<T>, detected_hw_traits());
+        // Pin nc to the compile-time derivation. Withholding l3_bytes from
+        // with_detected_caches is NOT sufficient to hold nc still, because
+        // nc = round_down(l3/(kc*sdata), nr) and kc IS detected: a machine with a
+        // larger L1 gets a larger kc and therefore a smaller nc, from an
+        // unchanged L3. (Invisible on a 32 KB-L1 x86 host, where kc matches the
+        // default; an Apple M-series 128 KB L1d moves it four-fold.) Since the jc
+        // partition is what must not move (#429), pin the result rather than an
+        // input, and leave this struct saying exactly what the nest should use.
+        p.nc = default_blocking<T>.nc;
+        return p;
+    }();
+    return bp;
+}
 
 } // namespace mtl::simd
