@@ -38,6 +38,19 @@ target_link_libraries(bench_sparse PRIVATE MTL5::mtl5)
 target_include_directories(bench_sparse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set_target_properties(bench_sparse PROPERTIES FOLDER "Benchmarks")
 
+# Cache-blocking A/B (#426 / #430 / #432): the SAME source built twice, once with
+# MTL5_ENABLE_CACHE_DETECTION and once without, so the two binaries differ only
+# in kc/mc. Driven by benchmarks/run_blocking_ab.sh, which pins and interleaves
+# them. The `-default` arm is what MTL5 ships; the `-detected` arm is the opt-in
+# under test, which measured a loss on the i7-12700K.
+foreach(_arm detected default)
+    add_executable(bench_blocking_ab_${_arm} bench_blocking_ab.cpp)
+    target_link_libraries(bench_blocking_ab_${_arm} PRIVATE MTL5::mtl5)
+    target_include_directories(bench_blocking_ab_${_arm} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    set_target_properties(bench_blocking_ab_${_arm} PROPERTIES FOLDER "Benchmarks")
+endforeach()
+target_compile_definitions(bench_blocking_ab_detected PRIVATE MTL5_ENABLE_CACHE_DETECTION)
+
 # Future: individual focused benchmarks can be added here
 # add_executable(bench_gemm bench_gemm.cpp)
 # target_link_libraries(bench_gemm PRIVATE MTL5::mtl5)

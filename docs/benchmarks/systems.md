@@ -39,6 +39,69 @@ The primary MTL5 development machine.
 | Compiler | GCC 13.3.0, `-O3 -DNDEBUG` (CMake `Release`) |
 | CPU governor | `powersave` (`intel_pstate`; still boosts, but clocks are not pinned) |
 
+### Cache hierarchy — two hierarchies, not one
+
+This machine has **two different cache configurations in one socket**, and which
+one MTL5 detects depends on where the detecting thread is scheduled (#432). Both
+readings are recorded because neither is "the" answer for this CPU:
+
+| Pinned to | L1d | L2 | L3 | fp64 `kc` `mc` | fp32 `kc` `mc` |
+|---|---|---|---|---|---|
+| P-core, `taskset -c 0` (Golden Cove) | 48 KiB, 12-way | 1.25 MiB **private** | 25 MiB | `768` `106` | `768` `213` |
+| E-core, `taskset -c 16` (Gracemont) | 32 KiB, 8-way | 2 MiB **shared by 4 cores** | 25 MiB | `512` `256` | `512` `512` |
+| — Haswell defaults, for comparison | 32 KiB | 256 KiB | 8 MiB | `512` `32` | `512` `64` |
+
+Read with `util_test_cache_info -s` from a `ci`-preset build. Blocking figures are
+the 128-bit (SSE) build; an AVX2 build divides them by the wider SIMD width.
+
+Two things follow, and both matter when reading any result from this machine:
+
+1. **Unpinned detection is not reproducible here.** The same binary reports either
+   row depending on the scheduler. Every measurement on this machine must pin, and
+   must record which core class it pinned to.
+2. **The E-core L2 is shared by four cores**, so its 2 MiB supports about 512 KiB
+   per core — the `mc = 256` derived from it assumes roughly 4x the L2 a core
+   actually gets. The P-core's 1.25 MiB is genuinely private and needs no such
+   discount.
+
+Under this page's pinning policy (P-cores, E-cores excluded) the relevant row is
+the first: against the Haswell defaults, detection blocks with a larger `kc` and
+`mc`. **It is slower.**
+
+### Cache-blocking A/B result — detection loses here
+
+`benchmarks/run_blocking_ab.sh`, AVX2 build (`MTL5_NATIVE_ARCH=ON`), fp64,
+P-cores pinned, 5 interleaved rounds, min of 5. Ratio is detected / default
+throughput; the analyzer does not call anything within **2%** of parity, so
+`0.985` counts as a tie and everything below `0.98` is a loss:
+
+| shape | T=1 | T=8 |
+|---|---|---|
+| 1024³ | 0.965 | **0.551** |
+| 2048³ | 0.920 | 0.929 |
+| 4096³ | 0.901 | 0.985 |
+| 852 × 8192 × 1024 | 0.914 | 0.806 |
+| 852 × 12288 × 1024 | 0.906 | 0.675 |
+
+`detected kc=384 mc=213` against `default kc=256 mc=64`. Nine losses, one tie,
+no wins. Three separate causes, and only the first is about cache sizing:
+
+1. **At T=1 the larger blocks are slower at every size** — by 3.5% at 1024³ and
+   8–10% at the other four. No threading is involved: the analytical "half of L1,
+   half of L2" sizing is beaten by the hand-tuned constants on Golden Cove.
+2. **A larger `mc` starves the thread partition.** `gemm_blocked` fixes
+   `ic_nt = min(budget, nib)` from the *unbalanced* block count, so `mc` 64 → 213
+   takes `nib` 16 → 5 at 1024³ and five threads of eight do the work.
+3. **A larger `kc` inflates the packed B panel**, and once the jc loop splits
+   into teams each holds one: 2 × 12.6 MB against a 25 MiB L3.
+
+Causes 2 and 3 are the #408 / #429 family — a cache-derived parameter moving a
+*block count* the thread partition is sensitive to — and are defects independent
+of detection, which merely exposed them. Because of this result, cache detection
+ships **opt-in** (`MTL5_ENABLE_CACHE_DETECTION`); MTL5's shipped blocking is the
+compile-time defaults. Re-run the harness before assuming this verdict holds on
+different hardware.
+
 ### Vendor libraries
 
 | Backend | Version | Selected by |
