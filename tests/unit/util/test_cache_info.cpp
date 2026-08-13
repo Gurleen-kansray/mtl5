@@ -223,6 +223,68 @@ TEST_CASE("derive_blocking tracks the cache figures it is given",
     REQUIRE(simd::derive_blocking<double>(4, big_l2).mc > bp_small.mc);
 }
 
+TEST_CASE("a shared cache contributes only its per-core share",
+          "[util][cache][blocking]") {
+    // #432: an Alder Lake E-cluster publishes ONE 2 MiB L2 for four cores. Taken
+    // at face value it sized mc for roughly 4x the L2 a core actually has.
+    const simd::hw_traits def = simd::default_hw_traits;
+
+    util::cache_info cluster;
+    cluster.l1d_bytes = 32u * 1024;  cluster.l1d_sharing_cores = 1;
+    cluster.l2_bytes  = 2u * 1024 * 1024;
+    cluster.l2_sharing_cores = 4;                    // four cores, one L2
+    const simd::hw_traits hw = simd::with_detected_caches(def, cluster);
+    REQUIRE(hw.l2_bytes == 512u * 1024);             // 2 MiB / 4, not 2 MiB
+    REQUIRE(hw.l1_bytes == 32u * 1024);              // private: undivided
+
+    // An SMT pair must NOT be discounted: siblings share L1d/L2, but the pinning
+    // policy runs one thread per physical core and leaves the sibling idle. This
+    // is why cache_info counts CORES rather than logical CPUs -- counting CPUs
+    // would halve both on every hyperthreaded machine.
+    util::cache_info smt;
+    smt.l1d_bytes = 32u * 1024;   smt.l1d_sharing_cores = 1;   // 2 CPUs, 1 core
+    smt.l2_bytes  = 256u * 1024;  smt.l2_sharing_cores  = 1;
+    const simd::hw_traits hw_smt = simd::with_detected_caches(def, smt);
+    REQUIRE(hw_smt.l1_bytes == 32u * 1024);
+    REQUIRE(hw_smt.l2_bytes == 256u * 1024);
+
+    // Unknown sharing (0) is treated as private rather than dividing by zero.
+    util::cache_info unknown;
+    unknown.l2_bytes = 1024u * 1024;                 // sharing_cores left 0
+    REQUIRE(simd::with_detected_caches(def, unknown).l2_bytes == 1024u * 1024);
+}
+
+TEST_CASE("detection is reproducible and independent of the running core",
+          "[util][cache][blocking]") {
+    // The #432 defect: CPUID describes whichever core the thread is on, so on a
+    // hybrid CPU the same binary reported a P-core or an E-core hierarchy run to
+    // run. Detection must be a function of the machine (and the affinity mask),
+    // not of where the scheduler put this thread.
+    const util::cache_info a = util::detect_caches();
+    const util::cache_info b = util::detect_caches();
+    REQUIRE(a.l1d_bytes == b.l1d_bytes);
+    REQUIRE(a.l2_bytes  == b.l2_bytes);
+    REQUIRE(a.l3_bytes  == b.l3_bytes);
+    REQUIRE(a.l1d_sharing_cores == b.l1d_sharing_cores);
+    REQUIRE(a.l2_sharing_cores  == b.l2_sharing_cores);
+
+    INFO("l1d=" << a.l1d_bytes << "/" << a.l1d_sharing_cores
+         << " l2=" << a.l2_bytes << "/" << a.l2_sharing_cores
+         << " l3=" << a.l3_bytes << "/" << a.l3_sharing_cores);
+
+    // Sharing widens monotonically with level: a cache cannot be shared by fewer
+    // cores than the one above it. This is a property of the topology itself, so
+    // it holds on any machine. Deliberately NOT compared against
+    // hardware_concurrency() -- that is a concurrency hint with no defined
+    // relationship to cache topology, it varies with libstdc++ version and cgroup
+    // limits, and comparing a sysfs physical-core count to it would pass here by
+    // luck of toolchain rather than by being true.
+    if (a.l1d_sharing_cores != 0 && a.l2_sharing_cores != 0)
+        REQUIRE(a.l2_sharing_cores >= a.l1d_sharing_cores);
+    if (a.l2_sharing_cores != 0 && a.l3_sharing_cores != 0)
+        REQUIRE(a.l3_sharing_cores >= a.l2_sharing_cores);
+}
+
 TEST_CASE("a detected L1 moves nc even with L3 held fixed",
           "[util][cache][blocking]") {
     // Why runtime_blocking pins nc rather than merely withholding l3_bytes.
