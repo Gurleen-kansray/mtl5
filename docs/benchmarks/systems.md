@@ -16,7 +16,7 @@ with the system description here.
 | `i7-12700K` | 12th Gen Intel Core i7-12700K | 8 P-cores (E-cores excluded) | [Results](i7-12700k.md) |
 | `ryzen-9-8945hs` | AMD Ryzen 9 8945HS (Zen 4) | 8 cores (SMT siblings excluded) | [Results](ryzen-9-8945hs.md) |
 | `xeon-e5-2420v2` | Intel Xeon E5-2420 v2 (Ivy Bridge-EP) | 6 cores (SMT siblings excluded) | pending — #430 |
-| `jetson-orin` | NVIDIA Jetson, ARM Cortex-A78AE | 8 cores | pending — #430 |
+| `jetson-orin` | NVIDIA Jetson Orin, ARM Cortex-A78AE | 6 cores | pending — #430 |
 
 A machine is registered here as soon as it is part of an experiment, which can
 precede its first result page: the bottom two rows exist because #430 needs the
@@ -75,6 +75,38 @@ Three things follow, and all matter when reading any result from this machine:
 Under this page's pinning policy (P-cores, E-cores excluded) the relevant row is
 the first: against the Haswell defaults, detection blocks with a larger `kc` and
 `mc`. **It is slower.**
+
+### Cache hierarchy: asymmetric clusters, and a level MTL5 cannot see
+
+From the module datasheet, with what detection reports beside it:
+
+| | 4-core cluster | 2-core cluster |
+|---|---|---|
+| L1 per core | 128 KiB (64 KiB d + 64 KiB i) | same |
+| L2 per core | 256 KiB private | same |
+| L3 | 2 MiB shared by **4** → **512 KiB/core** | 2 MiB shared by **2** → **1 MiB/core** |
+| System Cache | 4 MiB shared across **both** clusters | — |
+
+Two things follow that matter when reading any result from this machine.
+
+**The cores are identical but their cache *sharing* is not.** All six are A78AE
+with the same private L1/L2, yet a core in the small cluster has twice the L3
+share of one in the large cluster. That is a third topology class beyond the
+homogeneous-private parts (`xeon-e5-2420v2`, `ryzen-9-8945hs`) and the hybrid
+P/E one (`i7-12700K`): *symmetric cores, asymmetric sharing*. A thread grid
+spanning both clusters therefore has non-uniform cache behaviour even though
+every thread runs the same core.
+
+**Detection handles it correctly, and the datasheet is why we know.** It reports
+`l3 = 2 MiB / 4 cores`, i.e. it selected the **smaller** per-core share (512 KiB)
+rather than the larger. That is #432's rule — take the minimum per-core budget
+across the CPUs the process may run on — doing exactly what it was written for,
+so blocks fit whichever cluster the work lands on.
+
+**The 4 MiB System Cache is not modelled at all.** It does not appear in sysfs, so
+`cache_info` cannot see it and `derive_blocking` never considers it. On this part
+there is a real level between the 2 MiB cluster L3 and DRAM that the blocking
+model is blind to. Worth remembering before concluding anything about `nc` here.
 
 ### Cache-blocking A/B result — detection loses here
 
@@ -278,26 +310,35 @@ core with its sibling and report a contended number.
 Single-threaded runs additionally force `MTL5_NUM_THREADS=1` (and the vendor
 equivalents where a vendor is linked).
 
-## `jetson-orin` — ARM Cortex-A78AE (pending characterization)
-
-> **This entry is incomplete on purpose.** The fields below have not been read
-> from the machine, and guessing them is worse than leaving them blank — the whole
-> point of this page is that performance claims do not travel between machines.
-> Fill them by running the commands below **on the Jetson** and replacing each
-> `TODO`; do not populate them from a datasheet, since the shipped configuration
-> (power mode, clock cap, memory) is what determines the numbers.
+## `jetson-orin` — Jetson Orin Nano (Tegra234, 6× Cortex-A78AE)
 
 | | |
 |---|---|
-| CPU | TODO — exact module (AGX Orin / Orin NX) and core count |
-| Topology | TODO — cores, clusters, SMT (expected: 8 cores, no SMT) |
-| Clocks | TODO — depends on the selected `nvpmodel` mode |
-| Cache | TODO — L1d, L2 per core, L3/SLC, line size |
-| ISA | TODO — NEON (expected); confirm whether SVE is exposed (relevant to #427) |
-| Memory | TODO — and note it is **shared with the GPU** |
-| OS | TODO — JetPack / L4T version and kernel |
-| Compilers | TODO |
-| Power mode | TODO — `nvpmodel -q` output |
+| CPU | NVIDIA Jetson **Orin Nano** Engineering Reference Developer Kit (Super), Tegra234 |
+| Topology | **6× Cortex-A78AE** (ARMv8.2), no SMT, all six online. Six is the module's **physical** core count, not a power-mode reduction — `nvpmodel.conf` defines `CPU_A78_0..5` and nothing else. **Two asymmetric clusters**: one 4-core and one 2-core (datasheet) |
+| Clocks | 729.6 MHz – **1497.6 MHz** (15 W mode cap). Governor **`schedutil`**, *not* pinned — see the caveat below |
+| Cache | L1d 64 KiB 4-way **private**, L2 256 KiB **private**, L3 2 MiB **per cluster**, 64 B line. Plus a **4 MiB System Cache** shared across clusters that sysfs does not expose — see below |
+| ISA | NEON, 128-bit (`nr=4` for fp64 ⇒ 2 doubles). **No SVE** — a data point for #427 |
+| Memory | 7 GiB total, **shared with the GPU** |
+| OS | Ubuntu 22.04.5 LTS, **L4T R36.4.7** (JetPack 6.x, GCID 42132812), kernel 5.15.148-tegra |
+| Compilers | GCC 11.4.0, `-O3 -DNDEBUG` (CMake `Release`) |
+| Power mode | **15 W (mode 0)**. GPU capped 306–612 MHz with 4 TPCs active, EMC 2133 MHz |
+| Thermal at rest | cpu 47.4 °C, gpu 46.2 °C, soc ~47 °C — far below throttle |
+
+> **Clocks were not pinned for the run on this page.** The governor is
+> `schedutil` and `jetson_clocks` was not applied, so cores ramp between 729.6
+> and 1497.6 MHz rather than sitting at the cap. Both A/B arms are affected
+> equally and the interleaved min-of-5 protocol absorbs much of it, but these are
+> **15 W-mode, unpinned** numbers and should not be compared against a `MAXN`
+> or `jetson_clocks` run. Single-thread GEMM measured 6.7 GFLOP/s, roughly 56% of
+> the ~12 GFLOP/s fp64 NEON peak this core reaches at the 15 W cap.
+
+The 6-core figure matters beyond bookkeeping: the thread pool clamps
+`MTL5_NUM_THREADS` to `hardware_concurrency`, so a run asking for 8 threads here
+gets a budget of 6, and every thread-grid calculation is bounded by 6. The A/B
+CSVs recorded only the *requested* count, which is why the first analysis of this
+machine used the wrong budget; the benchmark now records the effective pool size
+alongside it.
 
 ### Commands to fill this in
 
@@ -312,6 +353,30 @@ ctest --test-dir build -R util_test_cache_info --output-on-failure -V | grep l1d
 # power/thermal state -- the numbers are meaningless without these
 sudo nvpmodel -q; sudo jetson_clocks --show; cat /sys/devices/virtual/thermal/thermal_zone*/temp
 ```
+
+### Cache-blocking A/B result — neutral, and the grid explains the one loss
+
+`kc` doubles (64 KiB L1d) and `mc` halves — the opposite corner from the Zen 4.
+Result: **0 faster, 1 slower, 9 indistinguishable**, at an effective budget of 6
+(the run asked for 8; the pool clamps to `hardware_concurrency`), in **15 W mode
+with unpinned clocks**.
+
+| shape | T=1 | T=8 (pool 6) |
+|---|---|---|
+| 64 × 4096 × 1024 | 0.961 | 0.988 |
+| 64 × 6144 × 1024 | 0.965 | **0.760** |
+| 1024³ | 0.961 | 0.905 |
+| 2048³ | 0.994 | 0.990 |
+| 4096³ | 1.006 | 1.004 |
+
+The single loss is the single shape where the two arms get different thread
+grids: `mc = 16` gives `nib = 4`, so `ic_nt = min(6,4) = 4` and then
+`jc_nt = 6/4 = 1` by integer division — a grid of 4 where the default's `mc = 32`
+yields 2 × 3 = 6. Predicted 0.667, measured 0.760. `3 × 2` and `2 × 3` were both
+legal, so full utilisation existed and the factorization missed it (#429).
+
+Everywhere the grids match, the arms match. **`mc` shows no locality effect on
+this machine at all** — its entire measured influence is through the grid.
 
 ### Pinning and thermal policy (applies regardless of the module)
 
