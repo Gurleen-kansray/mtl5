@@ -47,7 +47,23 @@ param(
     [ValidateSet('before', 'after')][string]$Phase = 'before',
     [int]$Threads = 0,
     [string]$Repo = '',
-    [switch]$ReportOnly
+    [switch]$ReportOnly,
+    # Permit a dirty working tree (still recorded as tree_git_dirty=1).
+    #
+    # A SWITCH, not just the ALLOW_DIRTY environment variable, because the
+    # obvious way to set that variable does not work here: `set ALLOW_DIRTY=1` is
+    # cmd.exe syntax, and in PowerShell `set` is an alias for Set-Variable, so it
+    # creates a shell variable (or errors) and the run fails again with the same
+    # message. The environment form is $env:ALLOW_DIRTY = "1"; this switch means
+    # nobody has to know that.
+    [switch]$AllowDirty,
+
+    # Exclude a directory from the dirty check -- a harness passes its own
+    # OutDir. A previous run's CSVs, and the cmake logs these harnesses write
+    # beside them, say NOTHING about whether the source that built the binary is
+    # reproducible; counting them would stamp tree_git_dirty=1 on a sidecar whose
+    # code was pristine, and a field that lies is worse than one that is missing.
+    [string]$IgnorePath = ''
 )
 
 $ErrorActionPreference = 'Continue'
@@ -101,22 +117,67 @@ Emit 'preflight_kernel'  ([System.Environment]::OSVersion.VersionString -replace
 # The BINARY records the commit it was built from (mtl/build_info.hpp); this
 # records the commit the tree is on NOW. If they disagree the binary is stale
 # relative to the checkout.
+# CONTAINED to benchmarks/data/<something>. The exclusion is for GENERATED
+# output, and an unrestricted one is a hole straight through the gate: pass
+# -IgnorePath benchmarks and an edit to this very script stops counting, so
+# preflight reports a clean tree and the sidecar records tree_git_dirty=0 for a
+# build whose source had been modified. A recorded fact has to be true, so the
+# exclusion may only cover a directory that cannot hold source.
+#
+# In-repo paths outside that root are REFUSED, not silently narrowed: a run whose
+# OutDir sits somewhere unexpected should be blocked by the ordinary dirty gate
+# rather than quietly measured with a weaker one.
+$ignoreRel = ''
+if ($IgnorePath -and (Test-Path $IgnorePath)) {
+    $ig = (Resolve-Path $IgnorePath).Path.TrimEnd('\', '/')
+    $rp = (Resolve-Path $Repo).Path.TrimEnd('\', '/')
+    if ($ig.StartsWith($rp, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $rel = ($ig.Substring($rp.Length).TrimStart('\', '/')) -replace '\\', '/'
+        if ($rel -match '^benchmarks/data/.+') {
+            $ignoreRel = $rel
+        } else {
+            Warn ("-IgnorePath '$IgnorePath' is inside the repository but not under " +
+                  "benchmarks/data/<machine>; it will NOT be excluded from the dirty check.")
+        }
+    }
+    # Outside the repository entirely: git never reports it, nothing to exclude.
+}
+
 $treeCommit = 'unknown'
 $treeDirty = 'unknown'
 if (Get-Command git -ErrorAction SilentlyContinue) {
     $sha = & git -C $Repo rev-parse --short=12 HEAD 2>$null
     if ($LASTEXITCODE -eq 0 -and $sha) {
         $treeCommit = $sha.Trim()
-        $status = & git -C $Repo status --porcelain --untracked-files=normal 2>$null
+        # --untracked-files=ALL, not `normal`: git collapses a wholly untracked
+        # directory into one entry ("?? benchmarks/"), which no prefix filter for
+        # benchmarks/data/<machine>/ can ever match.
+        $status = & git -C $Repo status --porcelain --untracked-files=all 2>$null
         if ($LASTEXITCODE -eq 0) {
-            if ([string]::IsNullOrWhiteSpace($status -join '')) {
+            $entries = @($status | Where-Object { $_ -and $_.Length -gt 3 })
+            if ($ignoreRel) {
+                Emit 'tree_dirty_excluded' $ignoreRel
+                $entries = @($entries | Where-Object { $_.Substring(3) -notlike "$ignoreRel/*" })
+            }
+            if ($entries.Count -eq 0) {
                 $treeDirty = '0'
             } else {
                 $treeDirty = '1'
-                if ($env:ALLOW_DIRTY -eq '1') {
-                    Warn "working tree is dirty; ALLOW_DIRTY=1, recording tree_git_dirty=1"
+                if ($AllowDirty -or $env:ALLOW_DIRTY -eq '1') {
+                    Warn "working tree is dirty; recording tree_git_dirty=1"
                 } else {
-                    GateFailed "working tree is dirty -- this result could not be reproduced. Commit, stash, or set ALLOW_DIRTY=1 to record it as dirty."
+                    # Show what is dirty. Without this the operator has to guess,
+                    # and the usual answer is that a harness or an editor dropped
+                    # a file nobody meant to keep.
+                    $names = ($entries | Select-Object -First 5) -join '; '
+                    # Single-quoted so $env: and the backtick-free cmd example
+                    # survive verbatim -- a hint that gets mangled by the shell
+                    # it is teaching is worse than no hint.
+                    $hint = 'Commit, stash or clean them, or pass -AllowDirty. ' +
+                            'The environment form is $env:ALLOW_DIRTY = "1"; ' +
+                            'set ALLOW_DIRTY=1 is cmd.exe syntax and does nothing in PowerShell.'
+                    GateFailed ("working tree is dirty -- this result could not be reproduced.`n" +
+                                $hint + "`n  " + $names)
                 }
             }
         }
