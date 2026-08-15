@@ -196,8 +196,21 @@ function Run-Arm {
     if ($p.ExitCode -ne 0) { throw "$Label arm failed (T=$T, exit $($p.ExitCode))" }
 }
 
-# --- shapes: derived ONCE, from the detected arm, at the largest thread count -
+# --- preflight: gate the session before anything is measured (#442) ----------
+# A dirty tree, a competing build or a machine already hot invalidates the run,
+# and discovering it afterwards means the CSVs are already written. The key=value
+# output is appended to both sidecars below, so machine state travels with the
+# data rather than living in the operator's memory of the session.
 $TMax = ($ThreadList | Measure-Object -Maximum).Maximum
+$PreflightScript = Join-Path $PSScriptRoot "preflight.ps1"
+$PreflightKv = & $PreflightScript -Threads $TMax -Repo (Split-Path -Parent $PSScriptRoot)
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "preflight failed -- not measuring. Fix the above, or set ALLOW_DIRTY=1"
+    Write-Host "if you accept a dirty tree (it is then recorded as such in the sidecar)."
+    exit 1
+}
+
+# --- shapes: derived ONCE, from the detected arm, at the largest thread count -
 if ($Shapes -eq "") {
     $maskMax = Mask-ForThreads $TMax
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -238,6 +251,56 @@ for ($round = 1; $round -le $Rounds; $round++) {
             Run-Arm $Def "default"  $CsvDef $mask $T $Shapes
             Run-Arm $Det "detected" $CsvDet $mask $T $Shapes
         }
+    }
+}
+
+# Thermal AFTER the session, next to the before reading: a run that ended hot and
+# a configuration that is simply slow give the same GFLOP/s, and only the pair of
+# temperatures separates them. Appended once at the end because each benchmark
+# invocation truncates its own sidecar.
+# If the postflight read fails the MEASUREMENTS are still good -- they are
+# already on disk, and discarding a completed session over a failed thermometer
+# read would destroy data to punish a missing probe. What must not happen is the
+# key going missing silently, so a failure is recorded as `unavailable` and said
+# out loud. `unavailable` is a fact; an absent key is a reader's guess. This
+# matters more on Windows than anywhere else, where the sensor is usually absent.
+$AfterKv = & $PreflightScript -Phase after
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "postflight thermal read failed; recording thermal_after_c=unavailable. The measurements themselves are unaffected."
+    $AfterKv = "thermal_after_c=unavailable"
+}
+if (-not ($AfterKv -match 'thermal_after_c=')) { $AfterKv = "thermal_after_c=unavailable" }
+
+# Did we measure the code the tree is on? The binary records the commit it was
+# BUILT from (mtl/build_info.hpp); preflight records where the tree is NOW. They
+# differ whenever someone edits, forgets to rebuild, and measures -- an easy
+# error that hides completely in the numbers.
+$TreeCommit  = ($PreflightKv | Select-String -Pattern '^tree_git_commit=(.+)$').Matches.Groups[1].Value
+$BuildCommit = ""
+if (Test-Path "$CsvDet.sysinfo") {
+    $m = Get-Content "$CsvDet.sysinfo" | Select-String -Pattern '^git_commit=(.+)$' | Select-Object -First 1
+    if ($m) { $BuildCommit = $m.Matches.Groups[1].Value }
+}
+$Stale = "unknown"
+if ($TreeCommit -and $BuildCommit -and $TreeCommit -ne "unknown" -and $BuildCommit -ne "unknown") {
+    if ($TreeCommit -eq $BuildCommit) {
+        $Stale = "0"
+    } else {
+        $Stale = "1"
+        Write-Warning "binary was built from $BuildCommit but the tree is on $TreeCommit."
+        Write-Warning "These numbers describe the BUILT code; rebuild if that is not what you meant."
+    }
+}
+
+foreach ($s in @("$CsvDet.sysinfo", "$CsvDef.sysinfo")) {
+    if (Test-Path $s) {
+        Add-Content -Path $s -Value $PreflightKv
+        Add-Content -Path $s -Value $AfterKv
+        Add-Content -Path $s -Value @(
+            "binary_stale=$Stale",
+            "harness=run_blocking_ab.ps1",
+            "harness_rounds=$Rounds",
+            "harness_reps=$Reps")
     }
 }
 
