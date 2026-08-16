@@ -1,4 +1,4 @@
-label=detected
+label=kconly
 cpu_brand=AMD Ryzen 9 8945HS w/ Radeon 780M Graphics
 cpu_vendor=AuthenticAMD
 cpu_arch=x86_64
@@ -24,7 +24,7 @@ git_dirty=0
 cxx_flags=/arch:AVX512 /O2 /Ob2 /DNDEBUG
 cmake_build_type=Release
 pool_size=8
-detection_enabled=1
+detection_enabled=0
 preflight_version=1
 preflight_host=SW-NUC-AMD-A8-1
 preflight_kernel=Microsoft_Windows_NT_10.0.26200.0
