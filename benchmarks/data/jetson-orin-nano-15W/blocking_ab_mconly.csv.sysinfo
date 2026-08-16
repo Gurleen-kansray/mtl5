@@ -1,4 +1,4 @@
-label=detected
+label=mconly
 cpu_brand=ARMv8 Processor rev 1 (v8l)
 cpu_vendor=
 cpu_arch=aarch64
@@ -24,7 +24,7 @@ git_dirty=0
 cxx_flags= -O3 -DNDEBUG [MTL5_NATIVE_ARCH=ON]
 cmake_build_type=Release
 pool_size=6
-detection_enabled=1
+detection_enabled=0
 preflight_version=1
 preflight_host=Branes-Jetson
 preflight_kernel=Linux 5.15.148-tegra
