@@ -1,4 +1,4 @@
-label=default
+label=kconly
 cpu_brand=12th Gen Intel(R) Core(TM) i7-12700K
 cpu_vendor=GenuineIntel
 cpu_arch=x86_64
