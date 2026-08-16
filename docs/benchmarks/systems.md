@@ -456,10 +456,58 @@ mc_cache=213, the planner caps mc to 128, giving nib=8 and a perfectly balanced
 8x1 grid. **The worst remaining point is the balanced one**, so thread starvation
 is ruled out and `kc` plus L2 residency is what is left.
 
-The experiment that would settle it is a **kc-only vs mc-only** A/B on the i7:
-detect L1 alone in one arm, L2 alone in the other. If `kc` is the sole cause, the
-product of this whole line of work is not "detection off" but "detect L2, ignore
-L1" — a *win* on every machine whose mc is currently pinned at the default 64.
+The experiment that settles it is a **kc-only vs mc-only** A/B, and the harness
+now runs it. Four arms, all the same source, differing only in which detected
+level feeds the blocking:
+
+| arm | detects | moves |
+|---|---|---|
+| `default` | nothing | — (what MTL5 ships) |
+| `detected` | L1 + L2 | kc and mc |
+| `kconly` | L1 | kc |
+| `mconly` | L2 | mc |
+
+Run all four in **one session**, which is what makes them comparable — the arms
+rotate order round by round, so no arm systematically leads.
+
+Each machine has a committed profile under `benchmarks/machines/`, so the pin
+list, thread counts, ISA flag and output directory are **in the repository
+rather than in someone's shell history** — and land in the sidecar as
+`harness_profile`, `harness_pcpus`, `harness_arms`:
+
+```bash
+benchmarks/machines/i7-12700k.sh            # P-cores 0,2,...,14, T in {1,8}
+benchmarks/machines/jetson-orin-nano.sh     # 6 cores, T in {1,6}, OUTDIR follows nvpmodel
+```
+
+```powershell
+pwsh benchmarks/machines/ryzen-9-8945hs.ps1  # /arch:AVX512, 8 physical cores
+```
+
+Every profile refuses to run on a machine it does not recognise (`-Force` /
+`FORCE=1` overrides). That is not fussiness: the CSVs are named by arm and the
+runner clears them before writing, so a profile executed on the wrong host
+replaces one machine's committed evidence with another's — the #439 failure
+wearing a friendlier face. Anything can still be overridden for a one-off
+(`ROUNDS=3 ARMS="detected default" benchmarks/machines/i7-12700k.sh`), and the
+profile prints when a pin list came from the environment rather than from itself.
+
+Then compare each arm against the baseline:
+
+```bash
+./benchmarks/analyze_blocking_ab.py \
+    benchmarks/data/i7-12700k/blocking_ab_{kconly,default}.csv
+```
+
+If `kc` is the sole cause, the product of this whole line of work is not
+"detection off" but **"detect L2, ignore L1"** — a *win* on every machine whose
+mc is currently pinned at the default 64.
+
+One thing not to over-read: mc is derived from L2 *given kc*, so `mconly` does
+not reproduce the `detected` arm's mc. On the i7, `detected` gets mc=213 from
+kc=384 while `mconly` gets mc=320 from the default kc=256. That is the honest
+question — "what does this L2 imply for the blocking we ship?" — but it means the
+four arms are not a clean 2x2 of the same numbers.
 
 ### What the older CSVs cannot tell you
 
