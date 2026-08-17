@@ -195,6 +195,17 @@ if ((Invoke-Native "cmake" $cfg (Join-Path $LogDir "blocking_ab.configure")) -ne
 Write-Host "=== build"
 [string[]]$ArmList = $Arms -split '[,\s]+' | Where-Object { $_ }
 if ($ArmList.Count -lt 2) { throw "-Arms needs at least two arms to compare, got '$Arms'" }
+
+# The rotation only cancels position effects when every arm leads an equal number
+# of rounds, which needs -Rounds to be a multiple of the arm count. At 5 rounds
+# over 4 arms the first arm leads twice and one never leads -- a residual bias of
+# exactly the size the rotation exists to remove.
+if ($Rounds % $ArmList.Count -ne 0) {
+    $asked = $Rounds
+    $Rounds = [int][Math]::Ceiling($Rounds / $ArmList.Count) * $ArmList.Count
+    Write-Host "NOTE: -Rounds $asked over $($ArmList.Count) arms cannot balance the rotation;"
+    Write-Host "      running $Rounds rounds so each arm leads $($Rounds / $ArmList.Count)."
+}
 $known = @("default", "detected", "kconly", "mconly")
 foreach ($a in $ArmList) {
     if ($known -notcontains $a) { throw "unknown arm '$a'; known arms: $($known -join ', ')" }
@@ -205,15 +216,15 @@ if ((Invoke-Native "cmake" $targets (Join-Path $LogDir "blocking_ab.build")) -ne
     throw "build failed (see $LogDir\blocking_ab.build.err.log)"
 }
 
-function Arm-Exe($arm) { Join-Path $Full "benchmarks\Release\bench_blocking_ab_$arm.exe" }
-function Arm-Csv($arm) { Join-Path $DataDir "blocking_ab_$arm.csv" }
+function Get-ArmExe($arm) { Join-Path $Full "benchmarks\Release\bench_blocking_ab_$arm.exe" }
+function Get-ArmCsv($arm) { Join-Path $DataDir "blocking_ab_$arm.csv" }
 foreach ($a in $ArmList) {
-    if (-not (Test-Path (Arm-Exe $a))) { throw "missing $(Arm-Exe $a) after build" }
+    if (-not (Test-Path (Get-ArmExe $a))) { throw "missing $(Get-ArmExe $a) after build" }
 }
 # Shapes come from the FIRST arm and go to every arm, so the arms are never
 # compared on different shapes.
 $FirstArm = $ArmList[0]
-$Det = Arm-Exe $FirstArm
+$Det = Get-ArmExe $FirstArm
 
 # --- run one arm, pinned -----------------------------------------------------
 # Affinity is applied immediately after Start(); see caveat 2 in the header for
@@ -273,7 +284,7 @@ if ($Shapes -eq "") {
 Write-Host "shapes: $Shapes"
 
 foreach ($a in $ArmList) {
-    foreach ($f in @((Arm-Csv $a), "$(Arm-Csv $a).sysinfo")) {
+    foreach ($f in @((Get-ArmCsv $a), "$(Get-ArmCsv $a).sysinfo")) {
         if (Test-Path $f) { Remove-Item $f -Force }
     }
 }
@@ -289,7 +300,7 @@ for ($round = 1; $round -le $Rounds; $round++) {
     foreach ($T in $ThreadList) {
         $mask = Mask-ForThreads $T
         Write-Host ("== round {0}, T={1}, affinity mask 0x{2:x}, order: {3}" -f $round, $T, $mask, ($order -join ' '))
-        foreach ($a in $order) { Run-Arm (Arm-Exe $a) $a (Arm-Csv $a) $mask $T $Shapes }
+        foreach ($a in $order) { Run-Arm (Get-ArmExe $a) $a (Get-ArmCsv $a) $mask $T $Shapes }
     }
 }
 
@@ -316,8 +327,8 @@ if (-not ($AfterKv -match 'thermal_after_c=')) { $AfterKv = "thermal_after_c=una
 # error that hides completely in the numbers.
 $TreeCommit  = ($PreflightKv | Select-String -Pattern '^tree_git_commit=(.+)$').Matches.Groups[1].Value
 $BuildCommit = ""
-if (Test-Path "$(Arm-Csv $FirstArm).sysinfo") {
-    $m = Get-Content "$(Arm-Csv $FirstArm).sysinfo" | Select-String -Pattern '^git_commit=(.+)$' | Select-Object -First 1
+if (Test-Path "$(Get-ArmCsv $FirstArm).sysinfo") {
+    $m = Get-Content "$(Get-ArmCsv $FirstArm).sysinfo" | Select-String -Pattern '^git_commit=(.+)$' | Select-Object -First 1
     if ($m) { $BuildCommit = $m.Matches.Groups[1].Value }
 }
 $Stale = "unknown"
@@ -331,7 +342,7 @@ if ($TreeCommit -and $BuildCommit -and $TreeCommit -ne "unknown" -and $BuildComm
     }
 }
 
-foreach ($s in ($ArmList | ForEach-Object { "$(Arm-Csv $_).sysinfo" })) {
+foreach ($s in ($ArmList | ForEach-Object { "$(Get-ArmCsv $_).sysinfo" })) {
     if (Test-Path $s) {
         Add-Content -Path $s -Value $PreflightKv
         Add-Content -Path $s -Value $AfterKv
@@ -354,12 +365,45 @@ foreach ($s in ($ArmList | ForEach-Object { "$(Arm-Csv $_).sysinfo" })) {
 
 Write-Host ""
 Write-Host "wrote (+ .sysinfo sidecars):"
-foreach ($a in $ArmList) { Write-Host "  $(Arm-Csv $a)" }
+foreach ($a in $ArmList) { Write-Host "  $(Get-ArmCsv $a)" }
 # Every arm against the baseline. `default` is the baseline when present -- it is
 # what MTL5 ships, so every other arm is a proposed change to it.
 $Base = if ($ArmList -contains "default") { "default" } else { $FirstArm }
+# Arms that derived the SAME kc/mc measure the same thing, so comparing them
+# checks the SESSION rather than the code -- and the analyzer fails it when they
+# disagree systematically (#430).
+# By HEADER NAME, not column number. The CSV has grown columns twice (`pool`,
+# then the mc_used group), so kc sits at field 9 in the pre-`pool` files still
+# committed under benchmarks/data and at field 10 in current ones -- a positional
+# read silently returns (mc,nc) for the older layout.
+function Get-ArmBlocking($arm) {
+    $csv = Get-ArmCsv $arm
+    if (-not (Test-Path $csv)) { return "" }
+    $lines = Get-Content $csv | Select-Object -First 2
+    if ($lines.Count -lt 2) { return "" }
+    $head = $lines[0] -split ','
+    $row  = $lines[1] -split ','
+    $kc = [array]::IndexOf($head, 'kc'); $mc = [array]::IndexOf($head, 'mc')
+    if ($kc -lt 0 -or $mc -lt 0) { return "" }
+    return "$($row[$kc]),$($row[$mc])"
+}
+$checks = @()
+for ($i = 0; $i -lt $ArmList.Count; $i++) {
+    for ($j = $i + 1; $j -lt $ArmList.Count; $j++) {
+        if ((Get-ArmBlocking $ArmList[$i]) -eq (Get-ArmBlocking $ArmList[$j]) -and (Get-ArmBlocking $ArmList[$i]) -ne "") {
+            $checks += "  python benchmarks/analyze_blocking_ab.py `"$(Get-ArmCsv $ArmList[$i])`" `"$(Get-ArmCsv $ArmList[$j])`""
+        }
+    }
+}
+if ($checks.Count -gt 0) {
+    Write-Host ""
+    Write-Host "consistency checks -- these arms derived IDENTICAL kc/mc, so they must agree;"
+    Write-Host "the analyzer fails them if the machine drifted more than the effect under test:"
+    $checks | ForEach-Object { Write-Host $_ }
+}
+
 Write-Host "compare with:"
 foreach ($a in $ArmList) {
     if ($a -eq $Base) { continue }
-    Write-Host "  python benchmarks/analyze_blocking_ab.py `"$(Arm-Csv $a)`" `"$(Arm-Csv $Base)`""
+    Write-Host "  python benchmarks/analyze_blocking_ab.py `"$(Get-ArmCsv $a)`" `"$(Get-ArmCsv $Base)`""
 }
