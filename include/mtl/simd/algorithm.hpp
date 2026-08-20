@@ -12,6 +12,43 @@
 // Unaligned loads/stores are used so these work on any contiguous span
 // (sub-vectors, views); on modern cores aligned vs unaligned cost is
 // negligible. The packed-panel GEMM path (#89) uses aligned loads instead.
+//
+// Lane types are whatever batch<T> supports (mtl::simd::is_lane_v): float,
+// double, int32_t, uint32_t. On integer lanes every kernel here is EXACT mod
+// 2^32 -- the accumulators, the horizontal reduce and the scalar tail all
+// commute, because wrapping addition is associative. So the integer results are
+// bit-identical across lane counts and backends, and the scalar tails go
+// through the wrapping helpers rather than raw `+`/`*` so that a tail overflow
+// is defined rather than UB. Widening accumulation (int8/int16 into int32) is
+// #451 phases 2-3 and is not offered here.
+//
+// ACCUMULATOR COUNT IS A FLOATING-POINT DECISION
+//
+// The four independent accumulators exist to hide FP add/FMA latency: an FMA
+// retires in 3-5 cycles, so a single accumulator serializes the loop on that
+// chain. Integer lanes have no such problem -- the loop-carried dependency is
+// an integer add (1 cycle), while the body needs two loads and a multiply, so
+// the loop is throughput-bound long before it is latency-bound. The integer
+// reductions therefore run ONE accumulator, and the hand unroll is skipped.
+//
+// That is also what keeps them correct today. On the scalar-fallback backend
+// (W == 1) the hand unroll is four interleaved scalar chains, and the
+// autovectorizer has to fuse them back into one contiguous reduction -- legal
+// for integers, because their addition reassociates, and NOT attempted for
+// floats, because FP addition does not. GCC 13 performs that fusion and gets
+// the bookkeeping wrong: at -O3 -march=x86-64-v3 it vectorizes the first chain
+// with 8-wide contiguous loads (advancing 8 elements per iteration) while
+// leaving the other three chains advancing 4, so they cover half the range and
+// the result is silently wrong. Measured on GCC 13.3: 176 of the first 299
+// compile-time-constant lengths, int32_t and uint32_t only, float and double
+// never. Clang is unaffected.
+//
+// The single-accumulator form is not a workaround chosen to dodge that -- it is
+// the right shape for integers on its own terms, and it happens to be the shape
+// the compiler already handles, because there is nothing left to un-unroll.
+// tests/unit/simd/test_integer_lanes.cpp sweeps compile-time-constant lengths
+// against both the runtime-length result and a closed-form reference, which is
+// how the miscompile was caught and what will catch the next one.
 
 #include <cstddef>
 #include <type_traits>
@@ -20,26 +57,31 @@
 
 namespace mtl::simd {
 
-/// dot product: sum_i a[i]*b[i]  (real float/double).
+/// dot product: sum_i a[i]*b[i]  (real float/double, or int32/uint32 mod 2^32).
 template <typename T>
 T reduce_dot(const T* a, const T* b, std::size_t n) {
-    static_assert(std::is_floating_point_v<T>);
+    static_assert(is_lane_v<T>);
     using B = batch<T>;
     constexpr std::size_t W = B::size;
-    constexpr std::size_t U = 4;             // independent accumulators
-    constexpr std::size_t step = W * U;
     B a0{}, a1{}, a2{}, a3{};                // default ctor zero-initializes
     std::size_t i = 0;
-    for (; i + step <= n; i += step) {
-        a0 = fma(B::load_unaligned(a + i),           B::load_unaligned(b + i),           a0);
-        a1 = fma(B::load_unaligned(a + i + W),       B::load_unaligned(b + i + W),       a1);
-        a2 = fma(B::load_unaligned(a + i + 2 * W),   B::load_unaligned(b + i + 2 * W),   a2);
-        a3 = fma(B::load_unaligned(a + i + 3 * W),   B::load_unaligned(b + i + 3 * W),   a3);
+    // Four-accumulator body: floating lanes only (see the header note). On
+    // integer lanes a1..a3 stay zero and fold out of the combine exactly.
+    if constexpr (std::is_floating_point_v<T>) {
+        constexpr std::size_t U = 4;         // independent accumulators
+        constexpr std::size_t step = W * U;
+        for (; i + step <= n; i += step) {
+            a0 = fma(B::load_unaligned(a + i),           B::load_unaligned(b + i),           a0);
+            a1 = fma(B::load_unaligned(a + i + W),       B::load_unaligned(b + i + W),       a1);
+            a2 = fma(B::load_unaligned(a + i + 2 * W),   B::load_unaligned(b + i + 2 * W),   a2);
+            a3 = fma(B::load_unaligned(a + i + 3 * W),   B::load_unaligned(b + i + 3 * W),   a3);
+        }
     }
     for (; i + W <= n; i += W)
         a0 = fma(B::load_unaligned(a + i), B::load_unaligned(b + i), a0);
     T s = reduce_add((a0 + a1) + (a2 + a3));
-    for (; i < n; ++i) s += a[i] * b[i];     // scalar tail
+    for (; i < n; ++i)                       // scalar tail
+        s = mtl::detail::wrap_add(s, mtl::detail::wrap_mul(a[i], b[i]));
     return s;
 }
 
@@ -75,29 +117,31 @@ Wide reduce_dot_widen(const Narrow* a, const Narrow* b, std::size_t n) {
 /// sum of squares: sum_i a[i]*a[i]  (two_norm computes sqrt of this).
 template <typename T>
 T reduce_sum_squares(const T* a, std::size_t n) {
-    static_assert(std::is_floating_point_v<T>);
+    static_assert(is_lane_v<T>);
     using B = batch<T>;
     constexpr std::size_t W = B::size;
-    constexpr std::size_t U = 4;
-    constexpr std::size_t step = W * U;
     B a0{}, a1{}, a2{}, a3{};
     std::size_t i = 0;
-    for (; i + step <= n; i += step) {
-        B v0 = B::load_unaligned(a + i);          a0 = fma(v0, v0, a0);
-        B v1 = B::load_unaligned(a + i + W);      a1 = fma(v1, v1, a1);
-        B v2 = B::load_unaligned(a + i + 2 * W);  a2 = fma(v2, v2, a2);
-        B v3 = B::load_unaligned(a + i + 3 * W);  a3 = fma(v3, v3, a3);
+    if constexpr (std::is_floating_point_v<T>) {   // see reduce_dot / header note
+        constexpr std::size_t U = 4;
+        constexpr std::size_t step = W * U;
+        for (; i + step <= n; i += step) {
+            B v0 = B::load_unaligned(a + i);          a0 = fma(v0, v0, a0);
+            B v1 = B::load_unaligned(a + i + W);      a1 = fma(v1, v1, a1);
+            B v2 = B::load_unaligned(a + i + 2 * W);  a2 = fma(v2, v2, a2);
+            B v3 = B::load_unaligned(a + i + 3 * W);  a3 = fma(v3, v3, a3);
+        }
     }
     for (; i + W <= n; i += W) { B v = B::load_unaligned(a + i); a0 = fma(v, v, a0); }
     T s = reduce_add((a0 + a1) + (a2 + a3));
-    for (; i < n; ++i) s += a[i] * a[i];
+    for (; i < n; ++i) s = mtl::detail::wrap_add(s, mtl::detail::wrap_mul(a[i], a[i]));
     return s;
 }
 
 /// axpy: y[i] += alpha*x[i].
 template <typename T>
 void axpy(T alpha, const T* x, T* y, std::size_t n) {
-    static_assert(std::is_floating_point_v<T>);
+    static_assert(is_lane_v<T>);
     using B = batch<T>;
     constexpr std::size_t W = B::size;
     const B va(alpha);
@@ -106,20 +150,20 @@ void axpy(T alpha, const T* x, T* y, std::size_t n) {
         B r = fma(va, B::load_unaligned(x + i), B::load_unaligned(y + i));
         r.store_unaligned(y + i);
     }
-    for (; i < n; ++i) y[i] += alpha * x[i];
+    for (; i < n; ++i) y[i] = mtl::detail::wrap_add(y[i], mtl::detail::wrap_mul(alpha, x[i]));
 }
 
 /// scal: x[i] *= alpha.
 template <typename T>
 void scal(T alpha, T* x, std::size_t n) {
-    static_assert(std::is_floating_point_v<T>);
+    static_assert(is_lane_v<T>);
     using B = batch<T>;
     constexpr std::size_t W = B::size;
     const B va(alpha);
     std::size_t i = 0;
     for (; i + W <= n; i += W)
         (va * B::load_unaligned(x + i)).store_unaligned(x + i);
-    for (; i < n; ++i) x[i] *= alpha;
+    for (; i < n; ++i) x[i] = mtl::detail::wrap_mul(x[i], alpha);
 }
 
 } // namespace mtl::simd

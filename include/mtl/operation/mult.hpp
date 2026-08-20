@@ -7,6 +7,7 @@
 #include <mtl/concepts/vector.hpp>
 #include <mtl/math/identity.hpp>
 #include <mtl/math/accumulator_traits.hpp>
+#include <mtl/detail/wrapping_arithmetic.hpp>
 #include <mtl/interface/dispatch_traits.hpp>
 #include <mtl/mat/compressed2D.hpp>
 #include <mtl/mat/view/transposed_view.hpp>
@@ -36,7 +37,7 @@ void mult_generic(const M& A, const VIn& x, VOut& y) {
         for (typename M::size_type r = 0; r < A.num_rows(); ++r) {
             auto acc = math::zero<Result>();
             for (typename M::size_type c = 0; c < A.num_cols(); ++c) {
-                acc += A(r, c) * x(c);
+                acc = generic_fma<Result>(acc, A(r, c), x(c));
             }
             y(r) = acc;
         }
@@ -102,7 +103,7 @@ void mult_generic(const MA& A, const MB& B, MC& C) {
             for (typename MC::size_type c = 0; c < C.num_cols(); ++c) {
                 auto acc = math::zero<Result>();
                 for (typename MA::size_type k = 0; k < A.num_cols(); ++k) {
-                    acc += A(r, k) * B(k, c);
+                    acc = generic_fma<Result>(acc, A(r, k), B(k, c));
                 }
                 C(r, c) = acc;
             }
@@ -216,10 +217,17 @@ void mult(const M& A, const VIn& x, VOut& y) {
 #endif
 #ifdef MTL5_NATIVE_FAST_GEMM
     // Native SIMD GEMV: preferred over the generic scalar loop for dense
-    // contiguous float/double when no external BLAS handled it above.
-    if constexpr (interface::BlasDenseMatrix<M> &&
-                  interface::BlasDenseVector<VIn> &&
-                  interface::BlasDenseVector<VOut> &&
+    // contiguous lane types when no external BLAS handled it above.
+    //
+    // Gated on the Simd* concepts, not the Blas* ones, so the integer lanes are
+    // reachable (#451 phase 0). There is no external ?gemv for int32, so this
+    // native path is the only one they can take; the BLAS branch above is
+    // unreachable for them and needs no extra guard. The result is exact mod
+    // 2^32 and bit-identical across lane counts and thread partitions -- the
+    // per-row partitioning below is already order-preserving.
+    if constexpr (interface::SimdDenseMatrix<M> &&
+                  interface::SimdDenseVector<VIn> &&
+                  interface::SimdDenseVector<VOut> &&
                   std::is_same_v<typename M::value_type, typename VIn::value_type> &&
                   std::is_same_v<typename M::value_type, typename VOut::value_type>) {
         using T = typename M::value_type;
