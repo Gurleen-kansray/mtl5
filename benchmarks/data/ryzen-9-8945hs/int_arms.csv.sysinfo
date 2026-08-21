@@ -1,0 +1,18 @@
+label=native-int
+cpu_brand=AMD Ryzen 9 8945HS w/ Radeon 780M Graphics
+cpu_vendor=AuthenticAMD
+cpu_arch=x86_64
+cpu_logical_cores=16
+cpu_simd=SSE2 AVX AVX2 FMA AVX512F
+build_isa=SSE2 AVX AVX2 FMA AVX512F AVX512VNNI AVX3_DL
+os_name=Linux
+os_version=Ubuntu 24.04.3 LTS (6.6.87.2-microsoft-standard-WSL2)
+compiler=GCC
+compiler_version=13.3.0
+cpp_standard=202002
+build_type=Release
+suite=int
+label=native-int
+arch_flag=-march=znver4
+pin=0,2,4,6,8,10,12,14
+SIMD backend:    AVX3_DL   int8 quad dot: NATIVE (vpdpbusd / SDOT)
