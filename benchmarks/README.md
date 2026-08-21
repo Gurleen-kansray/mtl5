@@ -193,6 +193,49 @@ instruction behind it. That machine is the **control**: a Zen 4 advantage at the
 *small* end that this table lacks is the instruction; the large end is bytes on
 both. (Shape check only — not a contract-compliant run.)
 
+### Troubleshooting: `/usr/bin/env: 'bash\r': No such file or directory`
+
+The script was checked out with **CRLF** line endings, so the shebang names an
+interpreter called `bash\r`. This happens on Windows, where Git's default
+`core.autocrlf=true` converts on checkout — and it affects **every** `.sh` in
+this repository, not just this one, so it will bite the moment any part of the
+benchmark contract is run under WSL.
+
+The repository now carries a `.gitattributes` pinning `*.sh` to `eol=lf`, which
+prevents it. An **already-checked-out** tree still has the old endings, though;
+attributes only apply at checkout.
+
+Both repairs below **discard uncommitted changes to the files they touch** —
+commit or stash first.
+
+```bash
+# just the two scripts
+rm benchmarks/run_int_bench.sh benchmarks/machines/ryzen-9-8945hs-int.sh
+git checkout -- benchmarks/run_int_bench.sh benchmarks/machines/ryzen-9-8945hs-int.sh
+
+# or the whole working tree
+git rm --cached -r . && git reset --hard
+```
+
+Do **not** reach for `sed -i 's/\r$//' …` instead. It fixes the line endings and
+leaves the tree looking modified, so `preflight` refuses the run. That is worth
+stating precisely, because `git diff` will tell you the file is unchanged:
+
+```console
+$ sed -i 's/\r$//' s.sh
+$ git diff --numstat s.sh          # empty -- no content change
+$ git status --porcelain s.sh
+ M s.sh                            # ... but modified, and it stays that way
+warning: in the working copy of 's.sh', LF will be replaced by CRLF the next time Git touches it
+```
+
+Under `core.autocrlf=true` — the setting that produced the CRLF in the first
+place — Git reports the file modified because the working tree no longer matches
+what a checkout *would* write, not because the content differs. `preflight` tests
+exactly `git status --porcelain`, so it rejects, and correctly: a benchmark run
+on a tree Git considers modified cannot be attributed to a commit. Re-checkout
+instead, which leaves the tree genuinely clean.
+
 ### The guard
 
 `run_int_bench.sh` refuses to time a build without the native quad
