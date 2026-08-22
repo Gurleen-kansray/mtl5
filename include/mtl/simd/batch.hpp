@@ -45,6 +45,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 
 // wrap_add / wrap_sub / wrap_mul: the two's-complement helpers the scalar paths
@@ -209,7 +210,10 @@ public:
     /// multiply-add. It captures the memory-traffic win (one byte per element
     /// instead of eight) which is where most of the integer speedup lives --
     /// see docs/performance -- but not the specialised instruction, which needs
-    /// a different micro-kernel and a quad-interleaved pack layout.
+    /// a quad-interleaved pack layout and the broadcast-quad micro-kernel in
+    /// detail/gemm_quad_microkernel.hpp (#451 phase 5). For a GEMM that one is
+    /// measurably faster even where the instruction is emulated, so this path is
+    /// the fallback for pairs the quad op does not accept, not the preferred one.
     template <typename Src>
     static batch load_widen(const Src* p) {
         static_assert((std::is_floating_point_v<T> && std::is_floating_point_v<Src>) ||
@@ -295,6 +299,46 @@ public:
         const hn::Repartition<NA, D> dna;
         const hn::Repartition<NB, D> dnb;
         sum.v_ = hn::SumOfMulQuadAccumulate(d_, hn::LoadU(dna, a), hn::LoadU(dnb, b), sum.v_);
+    }
+
+    /// Quad multiply-accumulate with a BROADCAST left operand -- the GEMM shape
+    /// of the instruction, and the reason the micro-kernel needs a primitive of
+    /// its own (#451 phase 5).
+    ///
+    /// `quad_dot_accumulate` walks two vectors in step, which is a dot product.
+    /// A GEMM does not: one C row needs ONE A element (four of them here, for
+    /// four k values) multiplied against a whole row of B. So the left operand
+    /// is the same four narrow values in every lane, and lane j accumulates
+    ///
+    ///     sum[j] += sum_{q<4} a4[q] * b[4*j + q]
+    ///
+    /// which is exactly the rank-4 update the packed panels are laid out for:
+    /// `a4` is A(i, p..p+3) and `b[4*j+q]` is B(p+q, j). Four k steps per
+    /// instruction, against the widening load's one.
+    ///
+    /// The broadcast is a 32-bit splat of the four bytes AS THEY LIE IN MEMORY
+    /// (memcpy, then `Set`, then a reinterpret back to narrow lanes) -- one
+    /// `vpbroadcastd` / `LD1R`, not four inserts. Note this ties the quad's lane
+    /// order to the byte order of the machine: on a little-endian target lane 0
+    /// receives `a4[0]`, which is what pairs it with the `b` load. Every target
+    /// that HAS this instruction is little-endian, and
+    /// tests/unit/simd/test_quad_dot.cpp checks the pairing against a scalar
+    /// reference, so a big-endian port would fail loudly rather than quietly
+    /// transpose the quad.
+    template <typename NA, typename NB>
+    static void quad_dot_broadcast_accumulate(const NA* a4, const NB* b, batch& sum) {
+        static_assert(is_quad_widenable_v<NA> && is_quad_widenable_v<NB>,
+                      "quad_dot_broadcast_accumulate takes 8-bit operands");
+        static_assert(std::is_same_v<T, quad_accumulator_t<NA, NB>>,
+                      "accumulator must match the operand pairing: i8*i8 and "
+                      "u8*i8 -> int32, u8*u8 -> uint32");
+        static_assert(sizeof(T) == 4 * sizeof(NA), "the broadcast unit is four narrow values");
+        const hn::Repartition<NA, D> dna;
+        const hn::Repartition<NB, D> dnb;
+        T quad;                                  // a4[0..3], in memory order
+        std::memcpy(&quad, a4, sizeof(T));
+        sum.v_ = hn::SumOfMulQuadAccumulate(d_, hn::BitCast(dna, hn::Set(d_, quad)),
+                                            hn::LoadU(dnb, b), sum.v_);
     }
 
     friend batch operator+(batch a, batch b) { return batch(hn::Add(a.v_, b.v_)); }
@@ -407,6 +451,23 @@ public:
                 sum.v_, mtl::detail::wrap_mul(static_cast<T>(a[k]), static_cast<T>(b[k])));
     }
 
+    /// Quad multiply-accumulate with a broadcast left operand -- scalar
+    /// fallback; see the Highway variant for the contract. With one lane the
+    /// broadcast is a no-op, so this is the same four products as
+    /// quad_dot_accumulate -- which is the definition the SIMD path has to
+    /// reproduce lane by lane, and the reference the tests compare against.
+    template <typename NA, typename NB>
+    static void quad_dot_broadcast_accumulate(const NA* a4, const NB* b, batch& sum) {
+        static_assert(is_quad_widenable_v<NA> && is_quad_widenable_v<NB>,
+                      "quad_dot_broadcast_accumulate takes 8-bit operands");
+        static_assert(std::is_same_v<T, quad_accumulator_t<NA, NB>>,
+                      "accumulator must match the operand pairing: i8*i8 and "
+                      "u8*i8 -> int32, u8*u8 -> uint32");
+        for (std::size_t q = 0; q < 4; ++q)
+            sum.v_ = mtl::detail::wrap_add(
+                sum.v_, mtl::detail::wrap_mul(static_cast<T>(a4[q]), static_cast<T>(b[q])));
+    }
+
     friend batch operator+(batch a, batch b) { return batch(mtl::detail::wrap_add(a.v_, b.v_)); }
     friend batch operator-(batch a, batch b) { return batch(mtl::detail::wrap_sub(a.v_, b.v_)); }
     friend batch operator*(batch a, batch b) { return batch(mtl::detail::wrap_mul(a.v_, b.v_)); }
@@ -454,29 +515,150 @@ inline const char* backend_name() noexcept {
 #endif
 }
 
-/// Does this build have a NATIVE quad multiply-accumulate (the int8 dot), or
-/// will it decompose? Compile-time, and deliberately mirrors Highway's own
-/// target gate rather than guessing from a single feature macro.
-inline constexpr bool has_native_quad_dot =
+// -- native quad multiply-accumulate, PER OPERAND PAIRING ---------------------
+//
+// WHY THIS IS NOT ONE BOOLEAN. The hardware support is per pairing, and the two
+// ISAs that have it disagree about WHICH pairing they implement -- so a single
+// flag cannot describe either machine honestly, and reports the wrong thing
+// about at least one arm on both:
+//
+//                     x86 AVX3_DL   x86 AVX10.2   NEON+DotProd   NEON+I8MM
+//     u8 x i8           NATIVE        native       emulated       NATIVE
+//     i8 x i8          emulated       native        NATIVE        native
+//     u8 x u8          emulated       native        NATIVE        native
+//
+// x86 implements the mixed form first (`vpdpbusd` -- unsigned activations
+// against signed weights, the shape quantized inference produces) and gets the
+// symmetric ones only with AVX10.2's `vpdpbssd`/`vpdpbuud`. ARM implements the
+// symmetric ones first (`SDOT`/`UDOT`, Armv8.2 FEAT_DotProd) and gets the mixed
+// one only with I8MM's `USDOT` (Armv8.6). Everything else is emulated at about
+// three times the work -- two native calls plus a shift and a subtract.
+//
+// The consequence for measurement is the whole reason this exists: the arm that
+// is fastest on every x86 (`u8 x i8`) is the SLOW one on a Cortex-A78, and a
+// cross-machine comparison that pairs arms by NAME rather than by whether they
+// were native gets the sign of the effect wrong.
+//
+// These mirror HIGHWAY'S OWN CONDITIONS -- `HWY_TARGET <= HWY_AVX3_DL` is
+// literally the gate in x86_128-inl.h, and the ARM clauses are those in
+// arm_neon-inl.h -- rather than reconstructing them from feature macros. The
+// previous single flag did reconstruct them, from a seven-macro AVX-512
+// conjunction, which was correct but had to be re-derived by hand every time
+// Highway moved.
+
 #if !MTL5_SIMD_USE_HIGHWAY
-    false;
-#elif defined(__aarch64__) || defined(_M_ARM64)
-    // NEON SDOT/UDOT.
-  #if defined(__ARM_FEATURE_DOTPROD)
-    true;
-  #else
-    false;
-  #endif
-#elif defined(__AVX512F__) && defined(__AVX512VNNI__) && defined(__VAES__) &&  \
-      defined(__VPCLMULQDQ__) && defined(__AVX512VBMI__) &&                    \
-      defined(__AVX512VBMI2__) && defined(__AVX512VPOPCNTDQ__) &&              \
-      defined(__AVX512BITALG__)
-    true;
-#elif defined(__AVX10_2__)
-    true;
+#  define MTL5_QUAD_NATIVE_U8I8 0
+#  define MTL5_QUAD_NATIVE_I8I8 0
+#  define MTL5_QUAD_NATIVE_U8U8 0
+
+#elif HWY_ARCH_X86
+// `HWY_X86_HAVE_AVX10_2_OPS` also carries the COMPILER-version requirement for
+// the AVX10.2 intrinsics, which `__AVX10_2__` alone does not: a compiler too old
+// to emit `vpdpbssd` makes Highway fall back to the emulation even on a target
+// that advertises the ISA. Prefer it, and fall back to the ISA macro only if a
+// future Highway stops defining it.
+#  if defined(HWY_X86_HAVE_AVX10_2_OPS)
+#    define MTL5_X86_QUAD_AVX10_2 HWY_X86_HAVE_AVX10_2_OPS
+#  elif defined(__AVX10_2__)
+#    define MTL5_X86_QUAD_AVX10_2 1
+#  else
+#    define MTL5_X86_QUAD_AVX10_2 0
+#  endif
+#  if HWY_TARGET <= HWY_AVX3_DL
+#    define MTL5_QUAD_NATIVE_U8I8 1        // _mm_dpbusd_epi32
+#  else
+#    define MTL5_QUAD_NATIVE_U8I8 0
+#  endif
+#  define MTL5_QUAD_NATIVE_I8I8 MTL5_X86_QUAD_AVX10_2   // _mm_dpbssd_epi32
+#  define MTL5_QUAD_NATIVE_U8U8 MTL5_X86_QUAD_AVX10_2   // _mm_dpbuud_epi32
+
+#elif HWY_ARCH_ARM
+// SDOT/UDOT: FEAT_DotProd, or the NEON_BF16 target which implies it.
+#  if defined(__ARM_FEATURE_DOTPROD) || HWY_TARGET == HWY_NEON_BF16
+#    define MTL5_QUAD_NATIVE_I8I8 1        // vdotq_s32
+#    define MTL5_QUAD_NATIVE_U8U8 1        // vdotq_u32
+#  else
+#    define MTL5_QUAD_NATIVE_I8I8 0
+#    define MTL5_QUAD_NATIVE_U8U8 0
+#  endif
+// USDOT: FEAT_I8MM. The Apple clause is Highway's, kept verbatim -- those cores
+// have the instruction without the build advertising the feature macro.
+#  if defined(__ARM_FEATURE_MATMUL_INT8) ||                                    \
+      (HWY_TARGET == HWY_NEON_BF16 && HWY_OS_APPLE && HWY_ARCH_ARM_A64 &&      \
+       defined(HWY_HAVE_RUNTIME_DISPATCH) && HWY_HAVE_RUNTIME_DISPATCH)
+#    define MTL5_QUAD_NATIVE_U8I8 1        // vusdotq_s32
+#  else
+#    define MTL5_QUAD_NATIVE_U8I8 0
+#  endif
+
 #else
-    false;
+#  define MTL5_QUAD_NATIVE_U8I8 0
+#  define MTL5_QUAD_NATIVE_I8I8 0
+#  define MTL5_QUAD_NATIVE_U8U8 0
 #endif
+
+/// Does this build have a NATIVE quad multiply-accumulate for the pairing
+/// `(NA, NB)`, or will Highway emulate it? See the table above.
+///
+/// False for any pairing the op does not accept at all -- `(i8, u8)` is absent
+/// on purpose, so it reads as "not native", which is true and is also what a
+/// caller should act on.
+template <typename NA, typename NB>
+inline constexpr bool has_native_quad_dot_v = false;
+
+template <> inline constexpr bool
+    has_native_quad_dot_v<std::uint8_t, std::int8_t>  = (MTL5_QUAD_NATIVE_U8I8 != 0);
+template <> inline constexpr bool
+    has_native_quad_dot_v<std::int8_t,  std::int8_t>  = (MTL5_QUAD_NATIVE_I8I8 != 0);
+template <> inline constexpr bool
+    has_native_quad_dot_v<std::uint8_t, std::uint8_t> = (MTL5_QUAD_NATIVE_U8U8 != 0);
+
+#undef MTL5_QUAD_NATIVE_U8I8
+#undef MTL5_QUAD_NATIVE_I8I8
+#undef MTL5_QUAD_NATIVE_U8U8
+#ifdef MTL5_X86_QUAD_AVX10_2
+#  undef MTL5_X86_QUAD_AVX10_2
+#endif
+
+/// How much of the quad multiply-accumulate this build gets natively.
+///
+/// Three states rather than two, because `partial` is the COMMON case: every
+/// machine measured so far that has the instruction at all has it for some
+/// pairings and not others. A benchmark that reports "native" or "decomposed"
+/// against a partial build is mislabelling at least one of its arms.
+enum class quad_dot_support {
+    none,       ///< every pairing emulated -- e.g. SSE4, AVX2, plain NEON
+    partial,    ///< some native, some emulated -- AVX3_DL, and NEON+DotProd
+    all,        ///< every pairing native -- AVX10.2, or NEON with I8MM
+};
+
+inline constexpr quad_dot_support quad_dot_native_support = [] {
+    constexpr bool a = has_native_quad_dot_v<std::uint8_t, std::int8_t>;
+    constexpr bool b = has_native_quad_dot_v<std::int8_t,  std::int8_t>;
+    constexpr bool c = has_native_quad_dot_v<std::uint8_t, std::uint8_t>;
+    if constexpr (a && b && c) return quad_dot_support::all;
+    else if constexpr (a || b || c) return quad_dot_support::partial;
+    else return quad_dot_support::none;
+}();
+
+/// Does this build have a native quad multiply-accumulate for ANY pairing?
+///
+/// Retained with its original meaning, which is what every existing caller and
+/// every committed sidecar assumed: it is the "did this build get the
+/// instruction at all" question. It is deliberately NOT "all pairings" -- that
+/// would read false on Zen 4 and on a Cortex-A78 alike and erase the distinction
+/// the sidecars exist to record. Use `has_native_quad_dot_v<NA, NB>` to say
+/// anything about a specific arm, and `quad_dot_native_support` to report.
+inline constexpr bool has_native_quad_dot = (quad_dot_native_support != quad_dot_support::none);
+
+/// "NATIVE", "PARTIAL" or "DECOMPOSED" -- the token a benchmark sidecar records.
+inline const char* quad_dot_support_name() noexcept {
+    switch (quad_dot_native_support) {
+        case quad_dot_support::all:     return "NATIVE";
+        case quad_dot_support::partial: return "PARTIAL";
+        default:                        return "DECOMPOSED";
+    }
+}
 
 /// Largest multiple of W not exceeding n -- the SIMD body length; iterate the
 /// remainder [vectorizable_length(n) .. n) scalar:

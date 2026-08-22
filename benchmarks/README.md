@@ -168,8 +168,64 @@ existing baselines. Ask for it by name.
 
 ```bash
 benchmarks/run_int_bench.sh --outdir benchmarks/data/<machine> [--arch <flag>] [--pin 0,2,4,6]
-benchmarks/machines/ryzen-9-8945hs-int.sh          # Zen 4, under WSL
 ```
+
+One committed profile per machine, so the arch flag, pin list, output directory
+and the `--allow-decomposed` decision live in the repository rather than in a
+shell history:
+
+```bash
+bash benchmarks/machines/ryzen-9-8945hs-int.sh      # Zen 4, under WSL -- the only NATIVE x86 part
+bash benchmarks/machines/jetson-orin-nano-int.sh    # A78AE, native SDOT; OUTDIR follows nvpmodel
+bash benchmarks/machines/i7-12700k-int.sh           # Alder Lake: has AVX-VNNI, cannot reach it (§7)
+bash benchmarks/machines/xeon-e5-2420-int.sh        # SSE4: no VNNI at all -- the control
+```
+
+| machine | arch flag | pin | quad dot | why it is in the set |
+|---|---|---|---|---|
+| Ryzen 9 8945HS | `-march=znver4` | `0,2,…,14` | native `vpdpbusd` | the only native x86 datapoint |
+| Jetson Orin Nano | `-mcpu=native` | `0,…,5` | native `SDOT`/`UDOT` | native, and **not x86** |
+| i7-12700K | `-march=alderlake` | `0,2,…,14` | decomposed | modern memory system, instruction absent |
+| Xeon E5-2420 v2 | `-march=native` | `0,…,5` | decomposed | no VNNI silicon exists — the control |
+
+The two decomposed profiles pass `--allow-decomposed` on the operator's behalf,
+because on those parts the decomposition is the measurement rather than a
+misconfiguration. The two native profiles deliberately do **not**: if the guard
+trips there, the build did not get the ISA it was supposed to, and that is worth
+stopping for.
+
+The Xeon pins `0,1,2,3,4,5` where the others pin `0,2,4,…` — its SMT siblings are
+**blocked** (`0,6`), (`1,7`) … not adjacent pairs, so the interleaved list would
+put two threads on three cores and idle the rest.
+
+⚠️ **The two native machines are native for *opposite* pairings**, and a
+cross-machine comparison that pairs arms by name will get the sign of the effect
+wrong:
+
+| pairing | x86 AVX3_DL | x86 AVX10.2 | NEON + DotProd | NEON + I8MM |
+|---|---|---|---|---|
+| `u8 × i8` | **native** `vpdpbusd` | native | emulated | **native** `USDOT` |
+| `i8 × i8` | emulated | native `vpdpbssd` | **native** `SDOT` | native |
+| `u8 × u8` | emulated | native `vpdpbuud` | **native** `UDOT` | native |
+
+So `gemm_u8i8_i32_quad` is the fast arm on x86 and the *slow* one on the Jetson.
+x86 gets exactly one pairing before AVX10.2 and ARM exactly two before I8MM, so
+neither is a superset of the other and **neither machine is a baseline for the
+other's arms**.
+
+`bench_all` therefore reports support **per pairing**, and
+`mtl::simd::has_native_quad_dot_v<NA, NB>` is the compile-time query:
+
+```text
+SIMD backend:    AVX3_DL   int8 quad dot: PARTIAL
+                 u8*i8 native   i8*i8 emulated   u8*u8 emulated
+```
+
+`PARTIAL` is the common case — every machine measured so far that has the
+instruction at all has it for some pairings and not others; only AVX10.2 and
+NEON+I8MM report `NATIVE`. A partial build runs without `--allow-decomposed`
+(it is a legitimate measurement) but is labelled `native-int-partial`, because
+half its arms are decomposed and nothing in a timing says which half.
 
 ### Read the curve, not a ratio
 
@@ -282,15 +338,92 @@ memory saving it was built for is irrelevant once operands are reused. Integer
 multiply is also simply slower than float FMA on this ISA — there is no integer
 FMA, so it is a separate multiply and add.
 
-The consequence is worth stating plainly, because it decides what hardware is
-worth buying: **on a machine without VNNI there is no int8 GEMM win at all.**
-Everything an int8 GEMM can offer over fp32 has to come from the instruction —
-which makes a VNNI or AMX machine's measurement almost purely a measurement of
-the instruction, cleanly separated from bandwidth. That is the opposite of the
-dot suite, where the instruction was ~1.2× against ~18× of traffic.
-
 `gemm_i8_i32` is the **widen-on-load** path: narrow operands promoted to int32
 lanes, then an ordinary multiply-add. It is *not* `vpdpbusd`, which consumes
 four k-values per instruction and needs a quad-interleaved pack layout and a
-different micro-kernel. That remains unbuilt, and this arm is what it would be
-measured against.
+different micro-kernel.
+
+### The quad arms, and what they revise
+
+That micro-kernel now exists, and it changes the conclusion above. The two new
+arms run the **quad multiply-accumulate** itself — four k-values per
+instruction, from quad-interleaved panels — against the same operands:
+
+| arm | GOP/s | vs `gemm_i8_i32` |
+|---|---|---|
+| `gemm_f32` | 19.7 | fp32 baseline |
+| `gemm_i32` | 14.1 | i32 × i32, same-type |
+| `gemm_i16_i32` | 12.7 | i16 × i16, widen |
+| `gemm_i8_i32` | 13.2 | i8 × i8, widen |
+| `gemm_i8_i32_quad` | **16.5** | i8 × i8, quad |
+| `gemm_u8i8_i32_quad` | **21.8** | u8 × i8, quad |
+
+Xeon E5-2420 v2, SSE4, n=512, `int8 quad dot: decomposed` — **this machine still
+has no VNNI.** From the committed run in
+`benchmarks/data/xeon-e5-2420/int_arms.csv`, produced by `run_int_bench.sh` with
+its preflight and its native-quad guard (see [The guard](#the-guard) above);
+provenance in the `.sysinfo` sidecar. Figures are best-of-iteration; on this run
+the median and the best agree to within 5.1% for every arm at every size, so the
+choice of statistic does not carry the result.
+
+### Read the ratios one variable at a time
+
+The four int8 numbers differ in **two** things — kernel and operand signedness —
+so only same-row-different-one-thing pairs are controlled comparisons. Across
+the four sizes in the committed run:
+
+| comparison | n=128 | n=256 | n=512 | n=1024 | what varies |
+|---|---|---|---|---|---|
+| `gemm_i8_i32_quad` ÷ `gemm_i8_i32` | 1.19× | 1.24× | **1.25×** | **1.27×** | the kernel, operands fixed |
+| `gemm_u8i8_i32_quad` ÷ `gemm_i8_i32_quad` | 1.27× | 1.29× | **1.32×** | **1.28×** | operand signedness, kernel fixed |
+| `gemm_u8i8_i32_quad` ÷ `gemm_i8_i32` | 1.51× | 1.60× | 1.64× | 1.62× | **both — not a controlled result** |
+
+**~1.25× is the kernel result**, and it *grows with n* — 1.19× at n=128 up to
+1.27× at n=1024 — which is what a register-blocking change should do: the small
+sizes never leave the caches, so the operand-traffic reduction the quad layout
+buys has nothing to pay for yet.
+
+The last row is the product of two effects and must not be quoted as what the
+quad kernel buys. It is at most "the best int8 GEMM available after this change,
+against the best available before", and it is worth noting only because there
+*is* no `u8 × i8` widen-on-load arm to compare against — the widening load
+requires matching signedness, so that pairing previously fell to the generic
+scalar loop.
+
+This distinction is not pedantry here. The 1.42×-versus-1.17× correction to the
+dot headline in §6 of the assessment came from exactly this error: two arms that
+differed in the instruction *and* in the decomposition shape, read as though only
+the instruction had moved.
+
+**The claim this replaces** was that on a machine without VNNI there is no int8
+GEMM win at all. That was true of the *widen-on-load* kernel and does not survive
+changing the kernel: at fixed operands the quad path is ~1.25× faster, and the
+`u8 × i8` shape beats fp32 outright — on a 2013 part with no VNNI silicon
+anywhere in it.
+
+The reason is visible in the disassembly rather than inferred. Highway's
+*decomposition* of the quad accumulate is a pair of `vpmaddwd` plus
+sign-extension shifts, which still folds four products per accumulator lane in a
+handful of instructions — where widen-on-load runs four independent
+promote-multiply-add chains. And the symmetric `i8 × i8` form carries visibly
+more of that shift work than `u8 × i8` (4 `vpsraw` + 2 `vpsllw` against 2 + 1
+plus a mask), which is exactly the 16.6-against-21.7 gap.
+
+So the operand width still contributes nothing, and the earlier reading of that
+— "everything an int8 GEMM offers must come from the instruction" — stands only
+once *the instruction* is read as the four-products-per-lane **kernel shape**
+rather than as *having VNNI silicon*. Those are not the same thing, and this
+machine separates them: it expresses the shape, through a `vpmaddwd`
+decomposition, and gains ~1.25× from it with no VNNI at all.
+
+A VNNI or AMX machine's GEMM number therefore remains an almost pure measurement
+of arithmetic rather than bandwidth, but its baseline is now
+`gemm_i8_i32_quad` **on the same machine**, not the widening arm — and the
+increment left for the silicon is correspondingly smaller than the previous
+wording implied.
+
+Both int8 arms are compiled into the same binary on purpose. They compute
+bit-identical results — integer addition is associative — so nothing in an
+*answer* distinguishes them, and comparing a quad number on one machine against
+a widen number on another is precisely the missing-control error that cost this
+programme 20% on the dot headline once already.
