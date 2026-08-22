@@ -4,7 +4,7 @@ cpu_vendor=GenuineIntel
 cpu_arch=x86_64
 cpu_logical_cores=20
 cpu_simd=SSE2 AVX AVX2 FMA
-build_isa=SSE2 AVX AVX2 FMA
+build_isa=SSE2 AVX AVX2 FMA AVXVNNI(unused)
 os_name=Linux
 os_version=Ubuntu 24.04.4 LTS (6.8.0-138-generic)
 compiler=GCC
@@ -15,4 +15,5 @@ suite=int
 label=native-int-decomposed
 arch_flag=-march=alderlake
 pin=0,2,4,6,8,10,12,14
-SIMD backend:    AVX2   int8 quad dot: decomposed
+SIMD backend:    AVX2   int8 quad dot: DECOMPOSED
+                 u8*i8 emulated   i8*i8 emulated   u8*u8 emulated
