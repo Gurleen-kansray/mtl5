@@ -1,4 +1,4 @@
-label=native-int
+label=native-int-partial
 cpu_brand=AMD Ryzen 9 8945HS w/ Radeon 780M Graphics
 cpu_vendor=AuthenticAMD
 cpu_arch=x86_64
@@ -12,7 +12,8 @@ compiler_version=13.3.0
 cpp_standard=202002
 build_type=Release
 suite=int
-label=native-int
+label=native-int-partial
 arch_flag=-march=znver4
 pin=0,2,4,6,8,10,12,14
-SIMD backend:    AVX3_DL   int8 quad dot: NATIVE (vpdpbusd / SDOT)
+SIMD backend:    AVX3_DL   int8 quad dot: PARTIAL
+                 u8*i8 native   i8*i8 emulated   u8*u8 emulated
