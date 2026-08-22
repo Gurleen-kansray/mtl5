@@ -1,0 +1,19 @@
+label=native-int-partial
+cpu_brand=ARMv8 Processor rev 1 (v8l)
+cpu_vendor=
+cpu_arch=aarch64
+cpu_logical_cores=6
+cpu_simd=
+build_isa=NEON DOTPROD
+os_name=Linux
+os_version=Ubuntu 22.04.5 LTS (5.15.148-tegra)
+compiler=GCC
+compiler_version=11.4.0
+cpp_standard=202002
+build_type=Release
+suite=int
+label=native-int-partial
+arch_flag=-mcpu=native
+pin=0,1,2,3,4,5
+SIMD backend:    NEON   int8 quad dot: PARTIAL
+                 u8*i8 emulated   i8*i8 native   u8*u8 native
