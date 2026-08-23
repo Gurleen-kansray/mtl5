@@ -17,24 +17,24 @@ cxx_flags=-march=alderlake -O3 -DNDEBUG
 cmake_build_type=Release
 harness=bench_nc_models
 measures=gemm throughput per nc model
-dtype=double
+dtype=float
 threads=8
 pool=8
 reps=3
 rounds=12
-mr=6 nr=8 kc=256 mc=64 nc=4096
-runtime_kc=256 runtime_mc=64
+mr=6 nr=16 kc=256 mc=128 nc=8192
+runtime_kc=256 runtime_mc=128
 compile_runtime_blocking_split=0
 l3_default_bytes=8388608
 l3_detected_bytes=26214400
 l3_sharing_cores=12
 shapes_total=20
 shapes_discriminating=20
-noise_floor=0.0430691
+noise_floor=0.0418563
 noise_floor_arms=36
-best_m1_gain=0.867407
+best_m1_gain=0.888265
 m1_differing_arms=5
-worst_first_round_excess=0.38415
+worst_first_round_excess=0.591448
 effect_above_noise=1
 preflight_version=1
 preflight_host=sw-21
