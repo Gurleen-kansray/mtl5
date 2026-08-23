@@ -11,9 +11,33 @@ compiler=GCC
 compiler_version=13.3.0
 cpp_standard=202002
 build_type=Release
+git_commit=20881cfdbf8e
+git_dirty=0
+cxx_flags=-march=alderlake -O3 -DNDEBUG
+cmake_build_type=Release
+pool_size=1
 suite=int
 label=native-int-decomposed
 arch_flag=-march=alderlake
 pin=0,2,4,6,8,10,12,14
+harness=run_int_bench.sh
+preflight_version=1
+preflight_host=sw-21
+preflight_kernel=Linux 6.8.0-138-generic
+tree_dirty_excluded=benchmarks/data/i7-12700k
+tree_git_commit=20881cfdbf8e
+tree_git_dirty=0
+competing_load=none
+loadavg_1m=0.05
+cpu_online=20
+cpu_affinity=20
+governor=powersave
+turbo=enabled
+power_mode=n/a
+thermal_sensor=coretemp:Package id 0
+thermal_before_c=25.0
+thermal_limit_c=80.0
+thermal_headroom_c=55.0
+preflight_gates=enforced
 SIMD backend:    AVX2   int8 quad dot: DECOMPOSED
                  u8*i8 emulated   i8*i8 emulated   u8*u8 emulated
