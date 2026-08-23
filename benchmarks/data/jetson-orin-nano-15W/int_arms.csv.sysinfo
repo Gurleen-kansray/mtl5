@@ -11,9 +11,33 @@ compiler=GCC
 compiler_version=11.4.0
 cpp_standard=202002
 build_type=Release
+git_commit=a1bf6ea8a92d
+git_dirty=0
+cxx_flags=-mcpu=native -O3 -DNDEBUG
+cmake_build_type=Release
+pool_size=1
 suite=int
 label=native-int-partial
 arch_flag=-mcpu=native
 pin=0,1,2,3,4,5
+harness=run_int_bench.sh
+preflight_version=1
+preflight_host=Branes-Jetson
+preflight_kernel=Linux 5.15.148-tegra
+tree_dirty_excluded=benchmarks/data/jetson-orin-nano-15W
+tree_git_commit=a1bf6ea8a92d
+tree_git_dirty=0
+competing_load=none
+loadavg_1m=0.07
+cpu_online=6
+cpu_affinity=6
+governor=schedutil
+turbo=unavailable
+power_mode=NV Power Mode: 15W 0
+thermal_sensor=thermal_zone:cpu-thermal
+thermal_before_c=48.1
+thermal_limit_c=70.0
+thermal_headroom_c=21.9
+preflight_gates=enforced
 SIMD backend:    NEON   int8 quad dot: PARTIAL
                  u8*i8 emulated   i8*i8 native   u8*u8 native
