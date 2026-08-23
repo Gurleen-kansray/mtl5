@@ -11,9 +11,33 @@ compiler=GCC
 compiler_version=13.3.0
 cpp_standard=202002
 build_type=Release
+git_commit=dc145c619ce3
+git_dirty=0
+cxx_flags=-march=znver4 -O3 -DNDEBUG
+cmake_build_type=Release
+pool_size=1
 suite=int
 label=native-int-partial
 arch_flag=-march=znver4
 pin=0,2,4,6,8,10,12,14
+harness=run_int_bench.sh
+preflight_version=1
+preflight_host=sw-nuc-amd-a8-101
+preflight_kernel=Linux 6.6.87.2-microsoft-standard-WSL2
+tree_dirty_excluded=benchmarks/data/ryzen-9-8945hs
+tree_git_commit=dc145c619ce3
+tree_git_dirty=0
+competing_load=none
+loadavg_1m=0.00
+cpu_online=16
+cpu_affinity=16
+governor=unavailable
+turbo=unavailable
+power_mode=n/a
+thermal_sensor=unavailable
+thermal_before_c=unavailable
+thermal_limit_c=unavailable
+thermal_headroom_c=unavailable
+preflight_gates=enforced
 SIMD backend:    AVX3_DL   int8 quad dot: PARTIAL
                  u8*i8 native   i8*i8 emulated   u8*u8 emulated
