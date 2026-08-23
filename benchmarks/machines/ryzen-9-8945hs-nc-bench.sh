@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# nc-model disagreement sweep on the Ryzen 9 8945HS (Zen 4) (#479).
+# nc-model TIMING session on the Ryzen 9 8945HS (Zen 4) (#479).
 #
-# See benchmarks/run_nc_sweep.sh for what this is FOR -- in one line: it finds,
-# without measuring anything, which matrix shapes on this machine can tell the
-# six candidate `nc` models apart, so a later timing session only runs those.
+# See benchmarks/run_nc_bench.sh for what this is FOR. In one line: it times the
+# six candidate `nc` models against each other on the shapes the SWEEP nominated
+# for this machine, so #429 can choose one on evidence rather than on the
+# argument that an even partition must be faster.
 #
-# Read one line of the output:  m1_balanced  N of 20
-# N = 0 means this machine cannot separate M0 from M1 and should not be booked
-# for that question. That is a result, not a failure.
+# RUN THE SWEEP FIRST (*-nc-sweep.sh). It takes seconds and says whether this
+# machine can separate M0 from M1 at all. If it cannot, this script would spend
+# an hour timing byte-identical code.
+#
+# Read the last three lines of the output: the measured noise floor, the best M1
+# gain, and the first-round excess. A gain that is not comfortably above the
+# floor is a measurement of the box, not of the model.
 #
 # Needs gcc/clang under WSL: -march=znver4 requires GCC >= 12, and MSVC has no equivalent.
 set -euo pipefail
@@ -22,8 +27,9 @@ if [[ "$ACTUAL" != *"$EXPECT"* ]]; then
     [ "${FORCE:-0}" = "1" ] || { echo "Refusing to write $EXPECT data. Set FORCE=1 if this really is one."; exit 2; }
 fi
 
-echo "profile: ryzen-9-8945hs-nc-sweep"
+echo "profile: ryzen-9-8945hs-nc-bench"
 echo "  cpu:     $ACTUAL"
+echo "  reps:    3   rounds: 12"
 echo "  arch:    -march=znver4"
 echo "  threads: 8"
 echo ""
@@ -34,6 +40,6 @@ echo ""
 # another machine's directory -- the cross-machine overwrite #439 already cost
 # a set of results. Pass-through still works for everything the profile does
 # not pin (--reps, --rounds, --dtypes, --allow-dirty).
-exec "$REPO_ROOT/benchmarks/run_nc_sweep.sh" \
+exec "$REPO_ROOT/benchmarks/run_nc_bench.sh" \
     "$@" \
     --arch "-march=znver4" --threads 8 --outdir "benchmarks/data/ryzen-9-8945hs"
