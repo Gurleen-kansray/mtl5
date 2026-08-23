@@ -1,0 +1,32 @@
+label=nc_model_sweep
+cpu_brand=AMD Ryzen 9 8945HS w/ Radeon 780M Graphics
+cpu_vendor=AuthenticAMD
+cpu_arch=x86_64
+cpu_logical_cores=16
+cpu_simd=SSE2 AVX AVX2 FMA AVX512F
+build_isa=SSE2 AVX AVX2 FMA AVX512F AVX512VNNI AVX3_DL
+os_name=Linux
+os_version=Ubuntu 24.04.3 LTS (6.6.87.2-microsoft-standard-WSL2)
+compiler=GCC
+compiler_version=13.3.0
+cpp_standard=202002
+build_type=Release
+git_commit=312677c778dc
+git_dirty=0
+cxx_flags=-march=znver4 -O3 -DNDEBUG
+cmake_build_type=Release
+harness=sweep_nc_models
+measures=nothing (pure enumeration)
+dtype=float
+threads=8
+mr=6 nr=32 kc=128 mc=256 nc=16384
+l3_default_bytes=8388608
+l3_detected_bytes=16777216
+l3_sharing_cores=8
+shapes_total=20
+shapes_separating_any=20
+shapes_differing_vs_m0_m1_balanced=5
+shapes_differing_vs_m0_m2_detected=12
+shapes_differing_vs_m0_m3_per_team=17
+shapes_differing_vs_m0_m4_per_sharer=20
+shapes_differing_vs_m0_m5_exact=12
