@@ -1,0 +1,32 @@
+label=nc_model_sweep
+cpu_brand=12th Gen Intel(R) Core(TM) i7-12700K
+cpu_vendor=GenuineIntel
+cpu_arch=x86_64
+cpu_logical_cores=20
+cpu_simd=SSE2 AVX AVX2 FMA
+build_isa=SSE2 AVX AVX2 FMA AVXVNNI(unused)
+os_name=Linux
+os_version=Ubuntu 24.04.4 LTS (6.8.0-138-generic)
+compiler=GCC
+compiler_version=13.3.0
+cpp_standard=202002
+build_type=Release
+git_commit=47413590a48e
+git_dirty=0
+cxx_flags=-march=alderlake -O3 -DNDEBUG
+cmake_build_type=Release
+harness=sweep_nc_models
+measures=nothing (pure enumeration)
+dtype=float
+threads=8
+mr=6 nr=16 kc=256 mc=128 nc=8192
+l3_default_bytes=8388608
+l3_detected_bytes=26214400
+l3_sharing_cores=12
+shapes_total=20
+shapes_separating_any=20
+shapes_differing_vs_m0_m1_balanced=5
+shapes_differing_vs_m0_m2_detected=12
+shapes_differing_vs_m0_m3_per_team=15
+shapes_differing_vs_m0_m4_per_sharer=20
+shapes_differing_vs_m0_m5_exact=12
