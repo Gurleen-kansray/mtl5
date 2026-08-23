@@ -29,6 +29,7 @@
 // model for its `nc` given that `jc_nt`, then re-plan. That is the same shape
 // `gemm_blocked` already uses for `mc` -- `plan_gemm_grid` then `balanced_mc`.
 
+#include <mtl/build_info.hpp>
 #include <mtl/detail/gemm_blocked.hpp>
 #include <mtl/detail/nc_model.hpp>
 #include <mtl/detail/thread_pool.hpp>
@@ -39,7 +40,9 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <string>
 #include <vector>
 
@@ -148,6 +151,16 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Normalise BEFORE anything reports it. `derive_shapes` clamps its own copy
+    // to 1, so a `--threads 0` run would emit rows saying threads=1 while the
+    // header and the sidecar said 0 -- a committed CSV whose provenance
+    // contradicts its own contents. Reject rather than silently clamp: 0 is not
+    // a thread count anyone means.
+    if (tmax == 0) {
+        std::fprintf(stderr, "--threads must be >= 1 (got 0)\n");
+        return 2;
+    }
+
     const bool f32 = (dtype == "float");
     const std::size_t sdata = f32 ? sizeof(float) : sizeof(double);
     const mtl::simd::blocking_params bp =
@@ -164,19 +177,37 @@ int main(int argc, char* argv[]) {
     std::printf("  L3 default=%zu  detected=%zu  sharers=%zu  threads=%u\n\n",
                 l3_default, l3_detected, l3_sharers, tmax);
 
+    if (tmax == 1) {
+        std::printf(
+            "WARNING: --threads is 1.\n"
+            "  At jc_nt == 1 every balancing model is a no-op BY CONSTRUCTION, so this\n"
+            "  run cannot say anything about M1 vs M0 -- the pair #429 needs. The shape\n"
+            "  search also finds no jc-parallel shapes, so only the negative controls\n"
+            "  are enumerated. That is a valid control run and a useless planning run.\n"
+            "  Re-run with --threads set to the count you intend to MEASURE at.\n\n");
+    }
+
     const auto shapes = derive_shapes(bp, tmax);
     std::vector<std::string> rows;
     std::size_t disagreeing = 0;
+    // Disagreement against the BASELINE, per model. The bare "N of M shapes
+    // discriminate" line is not the answer and has actively misled once: at
+    // --threads 1 it reads "5 of 5" while M1 equals M0 on every one of them,
+    // because M2/M3/M4 differ and the total does not say which pair moved. The
+    // question a planning run is asked is always about a specific pair.
+    std::size_t pair_diff[6] = {0, 0, 0, 0, 0, 0};
     char buf[512];
 
     for (const auto& p : shapes) {
         outcome base{};
         bool first = true, differs = false;
         std::vector<outcome> outs;
+        std::size_t mi = 0;
         for (auto m : mtl::detail::all_nc_models) {
             const outcome o = evaluate(m, p, bp, sdata, l3_default, l3_detected, l3_sharers);
             if (first) { base = o; first = false; }
-            else if (o.nc != base.nc) differs = true;
+            else if (o.nc != base.nc) { differs = true; ++pair_diff[mi]; }
+            ++mi;
             outs.push_back(o);
             std::snprintf(buf, sizeof buf,
                           "%s,%s,%zu,%zu,%zu,%u,%zu,%zu,%zu,%u,%u,%.6f,%zu",
@@ -195,19 +226,91 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    std::printf("\n%zu of %zu shapes discriminate between the models.\n",
+    std::printf("\n%zu of %zu shapes separate at least two models.\n\n",
                 disagreeing, shapes.size());
-    if (disagreeing == 0)
-        std::printf("On this machine no derived shape separates them -- measuring here\n"
-                    "would compare a binary against itself. That is a result, not a\n"
-                    "failure: it says this machine cannot contribute to the choice.\n");
+    std::printf("Against the baseline M0, per model -- this is the number to read:\n");
+    for (std::size_t i = 1; i < 6; ++i)
+        std::printf("  %-14s %2zu of %2zu%s\n",
+                    mtl::detail::nc_model_name(mtl::detail::all_nc_models[i]),
+                    pair_diff[i], shapes.size(),
+                    i == 1 ? "   <- the pair #429 needs" : "");
+
+    const std::size_t m1 = pair_diff[1];
+    std::printf("\n");
+    if (m1 == 0) {
+        std::printf("M1 NEVER DIFFERS FROM M0 on this machine's derived shapes.\n"
+                    "  That is a RESULT, not a failure: this machine cannot contribute to\n"
+                    "  the M0-vs-M1 choice, and a throughput run here would compare a\n"
+                    "  binary against itself. Worth knowing before booking the machine.\n");
+    } else {
+        std::printf("Measure the %zu shape%s where M1 differs from M0; the other %zu would\n"
+                    "compare a binary against itself.\n",
+                    m1, m1 == 1 ? "" : "s", shapes.size() - m1);
+    }
 
     if (!csv.empty()) {
         std::ofstream out(csv);
         if (!out) { std::fprintf(stderr, "cannot write %s\n", csv.c_str()); return 1; }
         out << "model,dtype,m,n,k,threads,nc,nib,njb,ic_nt,jc_nt,jc_imbalance,packedB_bytes\n";
         for (const auto& r : rows) out << r << "\n";
-        std::printf("wrote %s (%zu rows)\n", csv.c_str(), rows.size());
+
+        // Sidecar (#442, #477). This tool MEASURES NOTHING, so the machine-state
+        // half of the contract -- governor, thermal headroom, competing load --
+        // is irrelevant here and deliberately absent. The BUILD half is not
+        // merely relevant, it is the whole story: every number in this CSV comes
+        // from `default_blocking<T>`, which is derived from the compiled SIMD
+        // width. The same source built for SSE4 and for AVX-512 produces
+        // different `mr`, `nr`, `kc` and `nc`, and therefore a different answer
+        // to "where do the models disagree". A reader who cannot recover
+        // `cxx_flags` cannot tell which machine's question this CSV answers.
+        // Path built through std::filesystem::path per the project rule. It is a
+        // suffix, not a join, so this is about intent and consistency rather
+        // than correctness; the real consolidation is the shared sidecar writer
+        // #477 asks for, which would let all three producers share one.
+        std::filesystem::path side = std::filesystem::path{csv};
+        side += ".sysinfo";
+        std::ofstream si{side};
+        if (si) {
+            si << "label=nc_model_sweep\n"
+               << mtl::util::to_keyvals(mtl::util::identify())
+               << "git_commit="       << mtl::build_git_commit << "\n"
+               << "git_dirty="        << mtl::build_git_dirty  << "\n"
+               << "cxx_flags="        << mtl::build_cxx_flags  << "\n"
+               << "cmake_build_type=" << mtl::build_cmake_type << "\n"
+               << "harness=sweep_nc_models\n"
+               << "measures=nothing (pure enumeration)\n"
+               << "dtype="            << dtype << "\n"
+               << "threads="          << tmax << "\n"
+               << "mr=" << bp.mr << " nr=" << bp.nr << " kc=" << bp.kc
+               << " mc=" << bp.mc << " nc=" << bp.nc << "\n"
+               << "l3_default_bytes="  << l3_default  << "\n"
+               << "l3_detected_bytes=" << l3_detected << "\n"
+               << "l3_sharing_cores="  << l3_sharers  << "\n"
+               << "shapes_total=" << shapes.size() << "\n"
+               << "shapes_separating_any=" << disagreeing << "\n";
+            for (std::size_t i = 1; i < 6; ++i)
+                si << "shapes_differing_vs_m0_"
+                   << mtl::detail::nc_model_name(mtl::detail::all_nc_models[i])
+                   << "=" << pair_diff[i] << "\n";
+        }
+        // FAIL, do not report success. A silent sidecar failure produces exactly
+        // the untraceable CSV #478 exists to reject -- and the tool would have
+        // said "+ .sysinfo" while returning 0, so the next thing to notice would
+        // be CI, on a file already committed. Check the final stream state too:
+        // an ofstream that opened can still fail on a full disk mid-write.
+        si.flush();
+        if (!si) {
+            std::fprintf(stderr,
+                         "failed to write %s -- the CSV would be untraceable, so it is\n"
+                         "not left behind. See benchmarks/check_sidecars.sh.\n",
+                         side.string().c_str());
+            std::error_code ec;
+            std::filesystem::remove(csv, ec);
+            std::filesystem::remove(side, ec);
+            return 1;
+        }
+        std::printf("wrote %s (%zu rows) + %s\n", csv.c_str(), rows.size(),
+                    side.filename().string().c_str());
     }
     return 0;
 }
