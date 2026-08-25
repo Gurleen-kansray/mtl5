@@ -17,25 +17,25 @@ cxx_flags=-march=native -O3 -DNDEBUG
 cmake_build_type=Release
 harness=bench_nc_models
 measures=gemm throughput per nc model
-dtype=double
+dtype=float
 threads=6
 pool=6
 reps=3
 rounds=12
-mr=6 nr=4 kc=512 mc=32 nc=2048
-runtime_kc=512 runtime_mc=32
+mr=6 nr=8 kc=512 mc=64 nc=4096
+runtime_kc=512 runtime_mc=64
 compile_runtime_blocking_split=0
 l3_default_bytes=8388608
 l3_detected_bytes=15728640
 l3_sharing_cores=6
 shapes_total=20
 shapes_discriminating=20
-noise_floor=0.00895168
+noise_floor=0.0150938
 noise_floor_arms=41
-best_m1_gain=0.498488
+best_m1_gain=0.482415
 m1_differing_arms=8
-worst_first_round_excess=0.900343
-worst_tail_gain=0.0122033
+worst_first_round_excess=0.569813
+worst_tail_gain=0.0293066
 tail_arms=160
 converged=0
 effect_above_noise=1
