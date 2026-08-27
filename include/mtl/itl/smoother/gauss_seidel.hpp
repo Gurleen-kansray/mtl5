@@ -1,6 +1,8 @@
 #pragma once
 // MTL5 -- Gauss-Seidel smoother
 // Generic version uses A(i,j); compressed2D specialization uses raw CRS access.
+#include <mtl/concepts/scalar.hpp>   // Field (#505)
+#include <mtl/concepts/matrix.hpp>   // FieldMatrix (#505)
 #include <cassert>
 #include <cstddef>
 #include <type_traits>
@@ -32,7 +34,7 @@ namespace mtl::itl::smoother {
 /// operator() runs a forward (ascending-row) sweep; forward()/backward() expose
 /// the sweep direction explicitly (backward_gauss_seidel / symmetric_gauss_seidel
 /// build on them). All variants carry the optional Accumulator unchanged.
-template <typename Matrix, typename Accumulator = void>
+template <FieldMatrix Matrix, typename Accumulator = void>
 class gauss_seidel {
     using value_type = typename Matrix::value_type;
     using size_type  = typename Matrix::size_type;
@@ -89,7 +91,7 @@ private:
 };
 
 /// Specialization for compressed2D: O(nnz) sweep using raw CRS arrays.
-template <typename Value, typename Parameters, typename Accumulator>
+template <Field Value, typename Parameters, typename Accumulator>
 class gauss_seidel<mat::compressed2D<Value, Parameters>, Accumulator> {
     using matrix_type = mat::compressed2D<Value, Parameters>;
     using value_type  = Value;
@@ -164,7 +166,7 @@ private:
 /// Backward Gauss-Seidel: one in-place sweep in descending row order.
 /// Same fixed point as the forward sweep; the sweep direction is what
 /// mp-iterative studies against low-precision error propagation.
-template <typename Matrix, typename Accumulator = void>
+template <FieldMatrix Matrix, typename Accumulator = void>
 class backward_gauss_seidel {
 public:
     explicit backward_gauss_seidel(const Matrix& A) : gs_(A) {}
@@ -181,7 +183,7 @@ private:
 /// symmetric (SPD-preserving), which is why Krylov methods use it as a
 /// preconditioner -- hence a first-class primitive rather than a caller-side
 /// compose. Carries the optional Accumulator through both sweeps.
-template <typename Matrix, typename Accumulator = void>
+template <FieldMatrix Matrix, typename Accumulator = void>
 class symmetric_gauss_seidel {
 public:
     explicit symmetric_gauss_seidel(const Matrix& A) : gs_(A) {}
