@@ -672,4 +672,34 @@ constexpr std::size_t vectorizable_length(std::size_t n, std::size_t w) noexcept
 template <typename T>
 inline constexpr std::size_t width = batch<T>::size;
 
+/// The SCALAR equivalent of `fma(batch,batch,batch)` -- what one lane of it does.
+///
+/// A kernel's vector body and its scalar tail must agree, or an element's
+/// rounding depends on its INDEX: the first W*floor(n/W) elements are computed
+/// one way and the last n mod W another (#512).
+///
+/// IT IS THE PRIMITIVE ITSELF, not a reimplementation of it. Broadcasting to a
+/// batch, applying the same `fma`, and taking a lane back is exact -- every lane
+/// holds the identical value, so `reduce_max` recovers it -- and it CANNOT drift
+/// from the body, because it is the body's operation.
+///
+/// The first version of this did try to mirror the branch, guarded on
+/// `HWY_NATIVE_FMA`, on the reasoning that Highway's `MulAdd` is a hardware FMA
+/// only where the target has one. CI falsified it: on the clang Highway lane the
+/// batch `fma` fused while the guard read the macro as absent, so the mirror
+/// took the decomposed branch and disagreed with the very operation it was
+/// mirroring. A predicate that has to stay in sync with a third-party header's
+/// per-target macros is the wrong mechanism when the operation itself is one
+/// call away.
+///
+/// The tail runs at most W-1 times per kernel, so the broadcast and horizontal
+/// reduce are not worth avoiding for a correctness property.
+///
+/// Integer lanes need no special case: `fma` on an integer batch is the wrapping
+/// multiply-add, exact mod 2^N on both backends, which is the #451/#460 contract.
+template <typename T>
+inline T scalar_fma(T a, T b, T c) {
+    return reduce_max(fma(batch<T>(a), batch<T>(b), batch<T>(c)));
+}
+
 } // namespace mtl::simd
