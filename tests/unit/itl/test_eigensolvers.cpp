@@ -76,14 +76,26 @@ TEST_CASE("power_iteration: accumulator policy improves accuracy on a float Lapl
     v0(0) = 1.7f;
 
     // Configuration 1: default fp32 accumulation (Accumulator = float).
-    auto naive = itl::power_iteration(A, v0, 5000, 1e-6f);
+    auto naive = itl::power_iteration(A, v0, 20000, 1e-4f);
     // Wide accumulator: fp64 accumulation of the same fp32-element problem.
-    auto wide = itl::power_iteration<mat::dense2D<float>, float, double>(A, v0, 5000, 1e-6f);
+    // Residual tolerance loosened to match: the Ritz residual convergence
+    // rate is governed by the spectral gap (same for both configs), not by
+    // accumulation precision, so demanding a tighter residual here mostly
+    // buys extra iterations rather than reflecting the accuracy difference
+    // under test.
+    auto wide = itl::power_iteration<mat::dense2D<float>, float, double>(A, v0, 20000, 1e-4);
 
     const double e_naive = std::abs(static_cast<double>(naive.value) - lambda_max);
     const double e_wide  = std::abs(static_cast<double>(wide.value)  - lambda_max);
-    INFO("lambda_max=" << lambda_max << " naive=" << e_naive << " wide=" << e_wide);
-    REQUIRE(e_wide <= e_naive);
+    INFO("lambda_max=" << lambda_max
+         << " naive.converged=" << naive.converged << " naive.iterations=" << naive.iterations << " e_naive=" << e_naive
+         << " wide.converged="  << wide.converged  << " wide.iterations="  << wide.iterations  << " e_wide="  << e_wide);
+
+    CHECK(naive.converged);
+    CHECK(wide.converged);
+    CHECK(e_naive < 1e-3);
+    CHECK(e_wide  < 5e-4);
+    CHECK(e_wide <= e_naive);
 }
 
 TEST_CASE("power_iteration: dominant eigenpair of SPD Laplacian", "[itl][eigen][power]") {
