@@ -216,12 +216,6 @@ cholesky_symbolic sparse_cholesky_symbolic(
     return sym;
 }
 
-/// Accumulator policy for the numeric workspace. See sparse_lu.hpp's
-/// accumulator_traits for the rationale (thin alias over the canonical
-/// mtl::math::accumulator_traits, specializable here for a sparse-only override).
-template <typename Acc, typename Value>
-struct accumulator_traits : mtl::math::accumulator_traits<Acc, Value> {};
-
 /// Perform numeric Cholesky factorization using pre-computed symbolic analysis.
 ///
 /// This is the up-looking (left-looking) Cholesky algorithm:
@@ -240,7 +234,7 @@ cholesky_numeric<Value> sparse_cholesky_numeric(
     const cholesky_symbolic& sym)
 {
     using size_type = std::size_t;
-    using AT = accumulator_traits<Accumulator, Value>;  // numeric workspace policy
+    using AT = mtl::math::accumulator_traits<Accumulator, Value>;  // numeric workspace policy (sparse_lu.hpp already declares the same alias in this namespace, so use the canonical trait directly here to avoid a duplicate-definition collision when both headers are included together)
     size_type n = sym.n;
     if (A.num_rows() != n || A.num_cols() != n) {
         throw std::invalid_argument(
