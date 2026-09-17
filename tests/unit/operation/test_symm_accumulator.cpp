@@ -96,7 +96,7 @@ TEST_CASE("symm drives clear, not assign -- it is a zero-seeded reduction",
     counting_acc::reset();
     symm<counting_acc>(1.0, A, B, 0.0, C);
 
-    const int m = 2, n = 1, k = 2;
+    const std::size_t m = 2, n = 1, k = 2;
     REQUIRE(counting_acc::clears   == m * n);
     REQUIRE(counting_acc::products == m * n * k);
     REQUIRE(counting_acc::values   == m * n);
